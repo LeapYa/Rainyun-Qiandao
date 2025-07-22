@@ -220,14 +220,18 @@ if __name__ == "__main__":
     })
     logger.info("发起登录请求")
     driver.get("https://app.rainyun.com/auth/login")
-    username = driver.find_element(By.NAME, 'login-field')
-    password = driver.find_element(By.NAME, 'login-password')
-    login_button = driver.find_element(By.XPATH,
-                                       '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')
-    username.send_keys(user)
-    password.send_keys(pwd)
-    login_button.click()
     wait = WebDriverWait(driver, timeout)
+    try:
+        username = wait.until(EC.visibility_of_element_located((By.NAME, 'login-field')))
+        password = wait.until(EC.visibility_of_element_located((By.NAME, 'login-password')))
+        login_button = wait.until(EC.visibility_of_element_located((By.XPATH,
+                                                                    '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
+        username.send_keys(user)
+        password.send_keys(pwd)
+        login_button.click()
+    except TimeoutException:
+        logger.error("页面加载超时，请尝试延长超时时间或切换到国内网络环境！")
+        exit()
     try:
         login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
         logger.warning("触发验证码！")
