@@ -19,4 +19,4 @@
 ### 1. Linux系统怎么使用？
 #### 参照[此处](https://github.com/SerendipityR-2022/Rainyun-Qiandao/issues/1#issuecomment-3096198779)。
 ### 2. 找不到元素，报错`NoSuchElementException`
-#### 登录页加载缓慢，尝试延长超时等待时间或更换连接性更好的国内主机。
+#### 网页加载缓慢，尝试延长超时等待时间或更换连接性更好的国内主机。
