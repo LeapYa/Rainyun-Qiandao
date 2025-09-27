@@ -20,12 +20,83 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
 
+def get_random_user_agent():
+    """获取随机 User-Agent"""
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+    ]
+    return random.choice(user_agents)
+
+
+def parse_accounts():
+    """解析多账号配置"""
+    usernames = os.getenv("RAINYUN_USERNAME", "").split("|")
+    passwords = os.getenv("RAINYUN_PASSWORD", "").split("|")
+    
+    # 确保用户名和密码数量匹配
+    if len(usernames) != len(passwords):
+        logger.warning("用户名和密码数量不匹配，只使用匹配的部分")
+        min_len = min(len(usernames), len(passwords))
+        usernames = usernames[:min_len]
+        passwords = passwords[:min_len]
+    
+    # 过滤空值
+    accounts = [(u.strip(), p.strip()) for u, p in zip(usernames, passwords) if u.strip() and p.strip()]
+    
+    if not accounts:
+        # 如果没有多账号配置，使用单账号兼容模式
+        single_user = os.getenv("RAINYUN_USERNAME", "username")
+        single_pwd = os.getenv("RAINYUN_PASSWORD", "password")
+        accounts = [(single_user, single_pwd)]
+    
+    logger.info(f"检测到 {len(accounts)} 个账号")
+    for i, (username, _) in enumerate(accounts, 1):
+        masked_user = f"{username[:3]}***{username[-3:] if len(username) > 6 else username}"
+        logger.info(f"账号 {i}: {masked_user}")
+    
+    return accounts
+
+
+def run_all_accounts():
+    """执行所有账号的签到任务"""
+    accounts = parse_accounts()
+    success_count = 0
+    
+    for i, (username, password) in enumerate(accounts, 1):
+        logger.info(f"========== 开始执行第 {i}/{len(accounts)} 个账号签到 ==========")
+        success = run_checkin(username, password)
+        
+        if success:
+            success_count += 1
+            logger.info(f"✅ 账号 {i} 签到成功")
+        else:
+            logger.error(f"❌ 账号 {i} 签到失败")
+        
+        # 账号间延时（避免频繁操作）
+        if i < len(accounts):  # 不是最后一个账号
+            delay = random.randint(30, 120)  # 30-120秒随机延时
+            logger.info(f"账号间延时等待 {delay} 秒...")
+            time.sleep(delay)
+    
+    logger.info(f"========== 所有账号签到完成: {success_count}/{len(accounts)} 成功 ==========")
+    return success_count > 0
+
+
 def init_selenium() -> WebDriver:
     ops = Options()
     ops.add_argument("--no-sandbox")
     ops.add_argument("--disable-dev-shm-usage")  # Docker 环境优化
     ops.add_argument("--disable-extensions")
     ops.add_argument("--disable-plugins")
+    
+    # 添加随机 User-Agent
+    user_agent = get_random_user_agent()
+    ops.add_argument(f"--user-agent={user_agent}")
+    logger.info(f"使用 User-Agent: {user_agent[:50]}...")  # 只显示前50个字符
     
     if debug:
         ops.add_experimental_option("detach", True)
@@ -197,10 +268,13 @@ def compute_similarity(img1_path, img2_path):
     return similarity, len(good)
 
 
-def run_checkin():
+def run_checkin(account_user=None, account_pwd=None):
     """执行签到任务"""
+    current_user = account_user or user
+    current_pwd = account_pwd or pwd
+    
     try:
-        logger.info("开始执行签到任务...")
+        logger.info(f"开始执行签到任务... 账号: {current_user[:5]}***{current_user[-5:] if len(current_user) > 10 else current_user}")
         
         # 随机延时
         delay = random.randint(0, max_delay)
@@ -229,8 +303,8 @@ def run_checkin():
                 password = wait.until(EC.visibility_of_element_located((By.NAME, 'login-password')))
                 login_button = wait.until(EC.visibility_of_element_located((By.XPATH,
                                                                             '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
-                username.send_keys(user)
-                password.send_keys(pwd)
+                username.send_keys(current_user)
+                password.send_keys(current_pwd)
                 login_button.click()
             except TimeoutException:
                 logger.error("页面加载超时，请尝试延长超时时间或切换到国内网络环境！")
@@ -285,7 +359,7 @@ def run_checkin():
 def scheduled_checkin():
     """定时任务包装器"""
     logger.info(f"定时任务触发 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    success = run_checkin()
+    success = run_all_accounts()
     
     if success:
         logger.info("定时签到任务执行成功！")
@@ -310,10 +384,12 @@ if __name__ == "__main__":
     # 配置参数
     timeout = int(os.getenv("TIMEOUT", "15000")) // 1000  # 转换为秒
     max_delay = int(os.getenv("MAX_DELAY", "5"))
-    user = os.getenv("RAINYUN_USERNAME", "username")
-    pwd = os.getenv("RAINYUN_PASSWORD", "password")
     debug = os.getenv("DEBUG", "false").lower() == "true"
     linux = os.getenv("LINUX_MODE", "true").lower() == "true" or os.path.exists("/.dockerenv")
+    
+    # 兼容性变量（供单账号模式使用）
+    user = os.getenv("RAINYUN_USERNAME", "username").split("|")[0]
+    pwd = os.getenv("RAINYUN_PASSWORD", "password").split("|")[0]
     
     # 运行模式（once: 运行一次, schedule: 定时运行）
     run_mode = os.getenv("RUN_MODE", "schedule")
@@ -365,8 +441,8 @@ if __name__ == "__main__":
                 
                 # 检查是否到了首次执行时间
                 if not first_run_done and current_time >= first_run_time:
-                    logger.info("执行首次签到任务")
-                    success = run_checkin()
+                    logger.info("执行首次签到任务（所有账号）")
+                    success = run_all_accounts()
                     if success:
                         logger.info("首次签到任务执行成功！")
                     else:
@@ -390,8 +466,8 @@ if __name__ == "__main__":
             logger.info("程序已停止")
     else:
         # 单次运行模式
-        logger.info("运行模式: 单次执行")
-        success = run_checkin()
+        logger.info("运行模式: 单次执行（所有账号）")
+        success = run_all_accounts()
         if success:
             logger.info("程序执行完成")
         else:

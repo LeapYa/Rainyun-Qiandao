@@ -5,12 +5,17 @@
 #    - 首次启动1分钟后执行一次签到
 #    - 然后每天早上8点自动执行
 #    - 程序持续运行，自动重启
+#    - 支持多账号签到
 # 
 # 2. 单次运行（测试用）：docker-compose run rainyun-once
 #    - 执行一次签到后退出
 # 
 # 3. 查看日志：docker logs rainyun-schedule -f
 # 4. 停止定时任务：docker-compose down
+#
+# 多账号配置示例：
+#   RAINYUN_USERNAME=user1@qq.com|user2@163.com|user3@gmail.com
+#   RAINYUN_PASSWORD=pass1|pass2|pass3
 
 services:
   # 单次运行模式（测试用）
@@ -18,7 +23,9 @@ services:
     build: .
     container_name: rainyun-once
     environment:
-      # 雨云登录凭据 - 请修改为你的账号信息
+      # 雨云登录凭据 - 支持多账号，用 | 分隔
+      # 单账号: RAINYUN_USERNAME=your_email@example.com
+      # 多账号: RAINYUN_USERNAME=account1@example.com|account2@example.com
       - RAINYUN_USERNAME=your_email@example.com
       - RAINYUN_PASSWORD=your_password
       # 运行模式配置
@@ -50,7 +57,10 @@ services:
     container_name: rainyun-schedule
     restart: unless-stopped
     environment:
-      # 雨云登录凭据 - 请修改为你的账号信息
+      # 雨云登录凭据 - 支持多账号，用 | 分隔
+      # 单账号: RAINYUN_USERNAME=your_email@example.com
+      # 多账号: RAINYUN_USERNAME=account1@example.com|account2@example.com|account3@example.com
+      #         RAINYUN_PASSWORD=password1|password2|password3
       - RAINYUN_USERNAME=your_email@example.com
       - RAINYUN_PASSWORD=your_password
       # 运行模式配置
