@@ -3,6 +3,8 @@ import os
 import random
 import re
 import time
+import schedule
+from datetime import datetime, timedelta
 
 import cv2
 import ddddocr
@@ -21,13 +23,27 @@ from selenium.webdriver.support.wait import WebDriverWait
 def init_selenium() -> WebDriver:
     ops = Options()
     ops.add_argument("--no-sandbox")
+    ops.add_argument("--disable-dev-shm-usage")  # Docker 环境优化
+    ops.add_argument("--disable-extensions")
+    ops.add_argument("--disable-plugins")
+    
     if debug:
         ops.add_experimental_option("detach", True)
+    
     if linux:
         ops.add_argument("--headless")
         ops.add_argument("--disable-gpu")
-        return webdriver.Chrome(service=Service("./chromedriver"), options=ops)
-    return webdriver.Chrome(service=Service("chromedriver.exe"), options=ops)
+        
+        # Selenium 官方镜像的 ChromeDriver 路径
+        chromedriver_path = "/usr/bin/chromedriver"
+        
+        logger.info(f"使用 Selenium 镜像的 ChromeDriver: {chromedriver_path}")
+        service = Service(chromedriver_path)
+        return webdriver.Chrome(service=service, options=ops)
+    else:
+        # Windows 环境
+        service = Service("chromedriver.exe")
+        return webdriver.Chrome(service=service, options=ops)
 
 
 def download_image(url, filename):
@@ -179,87 +195,157 @@ def compute_similarity(img1_path, img2_path):
     return similarity, len(good)
 
 
-if __name__ == "__main__":
-    # 连接超时等待
-    timeout = 15
-    # 最大随机等待延时
-    max_delay = 90
-    # 用户名
-    user = "username"
-    # 密码
-    pwd = "12345678"
-    # 调试模式
-    debug = False
-    # Linux 模式
-    # [!] 在Windows环境下，带-headless参数会导致异常，应该关闭此项。
-    linux = False
+def run_checkin():
+    """执行签到任务"""
+    try:
+        logger.info("开始执行签到任务...")
+        
+        # 随机延时
+        delay = random.randint(0, max_delay)
+        delay_sec = random.randint(0, 60)
+        if not debug:
+            logger.info(f"随机延时等待 {delay} 分钟 {delay_sec} 秒")
+            time.sleep(delay * 60 + delay_sec)
+        
+        logger.info("初始化 Selenium")
+        driver = init_selenium()
+        
+        try:
+            # 过 Selenium 检测
+            with open("stealth.min.js", mode="r") as f:
+                js = f.read()
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": js
+            })
+            
+            logger.info("发起登录请求")
+            driver.get("https://app.rainyun.com/auth/login")
+            wait = WebDriverWait(driver, timeout)
+            
+            try:
+                username = wait.until(EC.visibility_of_element_located((By.NAME, 'login-field')))
+                password = wait.until(EC.visibility_of_element_located((By.NAME, 'login-password')))
+                login_button = wait.until(EC.visibility_of_element_located((By.XPATH,
+                                                                            '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
+                username.send_keys(user)
+                password.send_keys(pwd)
+                login_button.click()
+            except TimeoutException:
+                logger.error("页面加载超时，请尝试延长超时时间或切换到国内网络环境！")
+                return False
+            
+            try:
+                login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
+                logger.warning("触发验证码！")
+                driver.switch_to.frame("tcaptcha_iframe_dy")
+                process_captcha()
+            except TimeoutException:
+                logger.info("未触发验证码")
+            
+            time.sleep(5)
+            driver.switch_to.default_content()
+            
+            if driver.current_url == "https://app.rainyun.com/dashboard":
+                logger.info("登录成功！")
+                logger.info("正在转到赚取积分页")
+                driver.get("https://app.rainyun.com/account/reward/earn")
+                driver.implicitly_wait(5)
+                
+                earn = driver.find_element(By.XPATH,
+                                           '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
+                logger.info("点击赚取积分")
+                earn.click()
+                logger.info("处理验证码")
+                driver.switch_to.frame("tcaptcha_iframe_dy")
+                process_captcha()
+                driver.switch_to.default_content()
+                driver.implicitly_wait(5)
+                
+                points_raw = driver.find_element(By.XPATH,
+                                                 '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3').get_attribute(
+                    "textContent")
+                current_points = int(''.join(re.findall(r'\d+', points_raw)))
+                logger.info(f"当前剩余积分: {current_points} | 约为 {current_points / 2000:.2f} 元")
+                logger.info("签到任务执行成功！")
+                return True
+            else:
+                logger.error("登录失败！")
+                return False
+                
+        finally:
+            driver.quit()
+            
+    except Exception as e:
+        logger.error(f"签到任务执行失败: {e}")
+        return False
 
-    # 以下为代码执行区域，请勿修改！
+
+def scheduled_checkin():
+    """定时任务包装器"""
+    logger.info(f"定时任务触发 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    return run_checkin()
+
+
+if __name__ == "__main__":
+    # 配置参数
+    timeout = int(os.getenv("TIMEOUT", "15000")) // 1000  # 转换为秒
+    max_delay = int(os.getenv("MAX_DELAY", "5"))
+    user = os.getenv("RAINYUN_USERNAME", "username")
+    pwd = os.getenv("RAINYUN_PASSWORD", "password")
+    debug = os.getenv("DEBUG", "false").lower() == "true"
+    linux = os.getenv("LINUX_MODE", "true").lower() == "true" or os.path.exists("/.dockerenv")
+    
+    # 运行模式（once: 运行一次, schedule: 定时运行）
+    run_mode = os.getenv("RUN_MODE", "schedule")
+    # 定时执行时间（默认早上8点）
+    schedule_time = os.getenv("SCHEDULE_TIME", "08:00")
+
+    # 初始化日志
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
-    ver = "2.2"
+    ver = "2.2-scheduler"
     logger.info("------------------------------------------------------------------")
     logger.info(f"雨云签到工具 v{ver} by SerendipityR ~")
     logger.info("Github发布页: https://github.com/SerendipityR-2022/Rainyun-Qiandao")
     logger.info("------------------------------------------------------------------")
-    delay = random.randint(0, max_delay)
-    delay_sec = random.randint(0, 60)
-    if not debug:
-        logger.info(f"随机延时等待 {delay} 分钟 {delay_sec} 秒")
-        time.sleep(delay * 60 + delay_sec)
+    
+    # 初始化OCR
     logger.info("初始化 ddddocr")
     ocr = ddddocr.DdddOcr(ocr=True, show_ad=False)
     det = ddddocr.DdddOcr(det=True, show_ad=False)
-    logger.info("初始化 Selenium")
-    driver = init_selenium()
-    # 过 Selenium 检测
-    with open("stealth.min.js", mode="r") as f:
-        js = f.read()
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-        "source": js
-    })
-    logger.info("发起登录请求")
-    driver.get("https://app.rainyun.com/auth/login")
-    wait = WebDriverWait(driver, timeout)
-    try:
-        username = wait.until(EC.visibility_of_element_located((By.NAME, 'login-field')))
-        password = wait.until(EC.visibility_of_element_located((By.NAME, 'login-password')))
-        login_button = wait.until(EC.visibility_of_element_located((By.XPATH,
-                                                                    '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
-        username.send_keys(user)
-        password.send_keys(pwd)
-        login_button.click()
-    except TimeoutException:
-        logger.error("页面加载超时，请尝试延长超时时间或切换到国内网络环境！")
-        exit()
-    try:
-        login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
-        logger.warning("触发验证码！")
-        driver.switch_to.frame("tcaptcha_iframe_dy")
-        process_captcha()
-    except TimeoutException:
-        logger.info("未触发验证码")
-    time.sleep(5)
-    driver.switch_to.default_content()
-    if driver.current_url == "https://app.rainyun.com/dashboard":
-        logger.info("登录成功！")
-        logger.info("正在转到赚取积分页")
-        driver.get("https://app.rainyun.com/account/reward/earn")
-        driver.implicitly_wait(5)
-        earn = driver.find_element(By.XPATH,
-                                   '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
-        logger.info("点击赚取积分")
-        earn.click()
-        logger.info("处理验证码")
-        driver.switch_to.frame("tcaptcha_iframe_dy")
-        process_captcha()
-        driver.switch_to.default_content()
-        driver.implicitly_wait(5)
-        points_raw = driver.find_element(By.XPATH,
-                                         '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3').get_attribute(
-            "textContent")
-        current_points = int(''.join(re.findall(r'\d+', points_raw)))
-        logger.info(f"当前剩余积分: {current_points} | 约为 {current_points / 2000:.2f} 元")
-        logger.info("任务执行成功！")
+    
+    if run_mode == "schedule":
+        # 定时模式
+        logger.info(f"启动定时模式，每天 {schedule_time} 自动执行签到")
+        logger.info("程序将持续运行，按 Ctrl+C 退出")
+        
+        # 设置首次启动任务（1分钟后执行）
+        logger.info("首次启动，将在1分钟后执行首次签到任务")
+        schedule.every(1).minutes.do(lambda: (schedule.clear('startup'), run_checkin())).tag('startup')
+        
+        # 设置每日定时任务
+        schedule.every().day.at(schedule_time).do(scheduled_checkin)
+        
+        # 显示执行计划
+        startup_time = (datetime.now() + timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
+        logger.info(f"首次执行时间: {startup_time}")
+        
+        next_run = schedule.next_run()
+        if next_run:
+            logger.info(f"每日执行时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # 持续运行检查定时任务
+        try:
+            while True:
+                schedule.run_pending()
+                time.sleep(30)  # 每30秒检查一次，提高首次执行的响应性
+        except KeyboardInterrupt:
+            logger.info("程序已停止")
     else:
-        logger.error("登录失败！")
+        # 单次运行模式
+        logger.info("运行模式: 单次执行")
+        success = run_checkin()
+        if success:
+            logger.info("程序执行完成")
+        else:
+            logger.error("程序执行失败")

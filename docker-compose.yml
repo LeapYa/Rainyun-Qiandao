@@ -1,0 +1,98 @@
+# 雨云签到工具 Docker Compose 配置
+# 
+# 使用方法：
+# 1. 启动定时模式（推荐）：docker-compose up -d rainyun-schedule
+#    - 首次启动1分钟后执行一次签到
+#    - 然后每天早上8点自动执行
+#    - 程序持续运行，自动重启
+# 
+# 2. 单次运行（测试用）：docker-compose run rainyun-once
+#    - 执行一次签到后退出
+# 
+# 3. 查看日志：docker logs rainyun-schedule -f
+# 4. 停止定时任务：docker-compose down
+
+services:
+  # 单次运行模式（测试用）
+  rainyun-once:
+    build: .
+    container_name: rainyun-once
+    environment:
+      # 雨云登录凭据 - 请修改为你的账号信息
+      - RAINYUN_USERNAME=your_email@example.com
+      - RAINYUN_PASSWORD=your_password
+      # 运行模式配置
+      - RUN_MODE=once
+      # 可选配置
+      - DEBUG=false
+      - MAX_DELAY=5  # 减少随机延时，方便测试
+      - TIMEOUT=15000  # 调整超时时间
+      # Python环境配置
+      - PYTHONUNBUFFERED=1
+      - TZ=Asia/Shanghai
+    volumes:
+      # 挂载临时目录（用于验证码图片）
+      - ./temp:/app/temp
+      - ./logs:/app/logs
+    # 内存限制
+    mem_limit: 512m
+    # CPU限制
+    cpus: '0.3'
+    # 安全配置
+    security_opt:
+      - seccomp:unconfined
+    profiles:
+      - once  # 单次运行
+
+  # 定时运行模式（推荐）- 首次启动1分钟后执行，然后每天8点执行
+  rainyun-schedule:
+    build: .
+    container_name: rainyun-schedule
+    restart: unless-stopped
+    environment:
+      # 雨云登录凭据 - 请修改为你的账号信息
+      - RAINYUN_USERNAME=your_email@example.com
+      - RAINYUN_PASSWORD=your_password
+      # 运行模式配置
+      - RUN_MODE=schedule
+      - SCHEDULE_TIME=08:00  # 每天8点执行，首次启动1分钟后执行
+      # 可选配置
+      - DEBUG=false
+      - MAX_DELAY=5  # 减少随机延时，避免过长等待
+      - TIMEOUT=15000  # 调整超时时间
+      # Python环境配置
+      - PYTHONUNBUFFERED=1
+      - TZ=Asia/Shanghai
+    volumes:
+      # 挂载日志目录（可选）
+      - ./logs:/app/logs
+      # 挂载临时目录（用于验证码图片）
+      - ./temp:/app/temp
+    # 内存限制
+    mem_limit: 1g
+    # CPU限制
+    cpus: '0.5'
+    # 安全配置
+    security_opt:
+      - seccomp:unconfined
+    # 网络模式
+    network_mode: bridge
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "ps", "aux", "|", "grep", "python"]
+      interval: 1h
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+# 网络配置
+networks:
+  default:
+    driver: bridge
+
+# 卷配置
+volumes:
+  logs:
+    driver: local
+  temp:
+    driver: local
