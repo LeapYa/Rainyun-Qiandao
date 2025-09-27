@@ -71,9 +71,10 @@ def get_height_from_style(style):
     return re.search(r'height:\s*([\d.]+)px', style).group(1)
 
 
-def process_captcha():
+def process_captcha(driver, timeout):
     try:
-        download_captcha_img()
+        wait = WebDriverWait(driver, timeout)
+        download_captcha_img(driver, timeout)
         if check_captcha():
             logger.info("开始识别验证码")
             captcha = cv2.imread("temp/captcha.jpg")
@@ -129,12 +130,13 @@ def process_captcha():
         time.sleep(5)
         reload.click()
         time.sleep(5)
-        process_captcha()
+        process_captcha(driver, timeout)
     except TimeoutException:
         logger.error("获取验证码图片失败")
 
 
-def download_captcha_img():
+def download_captcha_img(driver, timeout):
+    wait = WebDriverWait(driver, timeout)
     if os.path.exists("temp"):
         for filename in os.listdir("temp"):
             file_path = os.path.join("temp", filename)
@@ -238,7 +240,7 @@ def run_checkin():
                 login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
                 logger.warning("触发验证码！")
                 driver.switch_to.frame("tcaptcha_iframe_dy")
-                process_captcha()
+                process_captcha(driver, timeout)
             except TimeoutException:
                 logger.info("未触发验证码")
             
@@ -257,7 +259,7 @@ def run_checkin():
                 earn.click()
                 logger.info("处理验证码")
                 driver.switch_to.frame("tcaptcha_iframe_dy")
-                process_captcha()
+                process_captcha(driver, timeout)
                 driver.switch_to.default_content()
                 driver.implicitly_wait(5)
                 
@@ -283,7 +285,25 @@ def run_checkin():
 def scheduled_checkin():
     """定时任务包装器"""
     logger.info(f"定时任务触发 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    return run_checkin()
+    success = run_checkin()
+    
+    if success:
+        logger.info("定时签到任务执行成功！")
+    else:
+        logger.error("定时签到任务执行失败！")
+    
+    # 显示下次执行时间
+    logger.info("定时任务完成，查看下次执行安排...")
+    time.sleep(1)  # 给schedule时间更新
+    next_run = schedule.next_run()
+    if next_run:
+        logger.info(f"✅ 程序继续运行，下次执行时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+        time_diff = next_run - datetime.now()
+        hours, remainder = divmod(time_diff.total_seconds(), 3600)
+        minutes, _ = divmod(remainder, 60)
+        logger.info(f"距离下次执行还有: {int(hours)}小时{int(minutes)}分钟")
+    
+    return success
 
 
 if __name__ == "__main__":
@@ -319,26 +339,53 @@ if __name__ == "__main__":
         logger.info(f"启动定时模式，每天 {schedule_time} 自动执行签到")
         logger.info("程序将持续运行，按 Ctrl+C 退出")
         
-        # 设置首次启动任务（1分钟后执行）
-        logger.info("首次启动，将在1分钟后执行首次签到任务")
-        schedule.every(1).minutes.do(lambda: (schedule.clear('startup'), run_checkin())).tag('startup')
-        
         # 设置每日定时任务
         schedule.every().day.at(schedule_time).do(scheduled_checkin)
         
-        # 显示执行计划
-        startup_time = (datetime.now() + timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
-        logger.info(f"首次执行时间: {startup_time}")
+        # 显示每日定时任务时间
+        tomorrow_schedule = datetime.now().replace(hour=int(schedule_time.split(':')[0]), 
+                                                  minute=int(schedule_time.split(':')[1]), 
+                                                  second=0, microsecond=0)
+        if tomorrow_schedule <= datetime.now():
+            tomorrow_schedule += timedelta(days=1)
+        logger.info(f"每日执行时间: {tomorrow_schedule.strftime('%Y-%m-%d %H:%M:%S')}")
         
-        next_run = schedule.next_run()
-        if next_run:
-            logger.info(f"每日执行时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+        # 首次启动1分钟后执行一次
+        logger.info("首次启动，将在1分钟后执行首次签到任务")
+        first_run_time = datetime.now() + timedelta(minutes=1)
+        logger.info(f"首次执行时间: {first_run_time.strftime('%Y-%m-%d %H:%M:%S')}")
         
         # 持续运行检查定时任务
+        logger.info("调度器已启动，等待执行任务...")
+        first_run_done = False
+        
         try:
             while True:
+                current_time = datetime.now()
+                
+                # 检查是否到了首次执行时间
+                if not first_run_done and current_time >= first_run_time:
+                    logger.info("执行首次签到任务")
+                    success = run_checkin()
+                    if success:
+                        logger.info("首次签到任务执行成功！")
+                    else:
+                        logger.error("首次签到任务执行失败！")
+                    
+                    # 显示下次执行时间
+                    logger.info("首次任务完成，查看下次执行安排...")
+                    logger.info(f"✅ 程序将继续运行，下次执行时间: {tomorrow_schedule.strftime('%Y-%m-%d %H:%M:%S')}")
+                    time_diff = tomorrow_schedule - datetime.now()
+                    hours, remainder = divmod(time_diff.total_seconds(), 3600)
+                    minutes, _ = divmod(remainder, 60)
+                    logger.info(f"距离下次执行还有: {int(hours)}小时{int(minutes)}分钟")
+                    
+                    first_run_done = True  # 标记首次任务已完成
+                
+                # 检查每日定时任务
                 schedule.run_pending()
-                time.sleep(30)  # 每30秒检查一次，提高首次执行的响应性
+                time.sleep(30)  # 每30秒检查一次
+                
         except KeyboardInterrupt:
             logger.info("程序已停止")
     else:
