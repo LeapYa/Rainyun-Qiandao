@@ -4,6 +4,8 @@ import random
 import re
 import time
 import schedule
+import signal
+import subprocess
 from datetime import datetime, timedelta
 
 import cv2
@@ -18,6 +20,46 @@ from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
+
+
+def cleanup_zombie_processes():
+    """清理可能残留的 Chrome/ChromeDriver 僵尸进程"""
+    try:
+        if os.name == 'posix':  # Linux/Unix 系统
+            # 查找并清理僵尸 chrome 和 chromedriver 进程
+            try:
+                result = subprocess.run(['pgrep', '-f', 'chrome|chromedriver'], 
+                                      capture_output=True, text=True, timeout=5)
+                if result.stdout:
+                    pids = result.stdout.strip().split('\n')
+                    zombie_count = 0
+                    for pid in pids:
+                        if pid:
+                            try:
+                                # 检查进程状态
+                                stat_result = subprocess.run(['ps', '-p', pid, '-o', 'stat='], 
+                                                           capture_output=True, text=True, timeout=2)
+                                if 'Z' in stat_result.stdout:  # 僵尸进程
+                                    zombie_count += 1
+                                    logger.warning(f"发现僵尸进程 PID: {pid}")
+                            except:
+                                pass
+                    
+                    if zombie_count > 0:
+                        logger.info(f"检测到 {zombie_count} 个僵尸进程")
+                        # 尝试清理孤儿进程（非僵尸但可能是残留的）
+                        subprocess.run(['pkill', '-9', '-f', 'chrome.*--type='], 
+                                     timeout=5, stderr=subprocess.DEVNULL)
+                        logger.info("已尝试清理残留的 Chrome 子进程")
+            except subprocess.TimeoutExpired:
+                logger.warning("进程清理超时")
+            except FileNotFoundError:
+                # pgrep/pkill 命令不存在，跳过
+                pass
+            except Exception as e:
+                logger.debug(f"清理进程时出现异常（可忽略）: {e}")
+    except Exception as e:
+        logger.debug(f"僵尸进程清理失败（可忽略）: {e}")
 
 
 def get_random_user_agent():
@@ -63,6 +105,10 @@ def parse_accounts():
 
 def run_all_accounts():
     """执行所有账号的签到任务"""
+    # 任务开始前清理可能的僵尸进程
+    logger.info("检查并清理可能的僵尸进程...")
+    cleanup_zombie_processes()
+    
     accounts = parse_accounts()
     success_count = 0
     
@@ -76,6 +122,9 @@ def run_all_accounts():
         else:
             logger.error(f"❌ 账号 {i} 签到失败")
         
+        # 每个账号执行后清理一次
+        cleanup_zombie_processes()
+        
         # 账号间延时（避免频繁操作）
         if i < len(accounts):  # 不是最后一个账号
             delay = random.randint(30, 120)  # 30-120秒随机延时
@@ -83,6 +132,11 @@ def run_all_accounts():
             time.sleep(delay)
     
     logger.info(f"========== 所有账号签到完成: {success_count}/{len(accounts)} 成功 ==========")
+    
+    # 任务结束后再次清理
+    logger.info("任务完成，执行最终清理...")
+    cleanup_zombie_processes()
+    
     return success_count > 0
 
 
@@ -272,6 +326,7 @@ def run_checkin(account_user=None, account_pwd=None):
     """执行签到任务"""
     current_user = account_user or user
     current_pwd = account_pwd or pwd
+    driver = None  # 初始化为 None，确保在任何情况下都能安全清理
     
     try:
         logger.info(f"开始执行签到任务... 账号: {current_user[:5]}***{current_user[-5:] if len(current_user) > 10 else current_user}")
@@ -286,74 +341,87 @@ def run_checkin(account_user=None, account_pwd=None):
         logger.info("初始化 Selenium")
         driver = init_selenium()
         
+        # 过 Selenium 检测
+        with open("stealth.min.js", mode="r") as f:
+            js = f.read()
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": js
+        })
+        
+        logger.info("发起登录请求")
+        driver.get("https://app.rainyun.com/auth/login")
+        wait = WebDriverWait(driver, timeout)
+        
         try:
-            # 过 Selenium 检测
-            with open("stealth.min.js", mode="r") as f:
-                js = f.read()
-            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                "source": js
-            })
+            username = wait.until(EC.visibility_of_element_located((By.NAME, 'login-field')))
+            password = wait.until(EC.visibility_of_element_located((By.NAME, 'login-password')))
+            login_button = wait.until(EC.visibility_of_element_located((By.XPATH,
+                                                                        '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
+            username.send_keys(current_user)
+            password.send_keys(current_pwd)
+            login_button.click()
+        except TimeoutException:
+            logger.error("页面加载超时，请尝试延长超时时间或切换到国内网络环境！")
+            return False
+        
+        try:
+            login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
+            logger.warning("触发验证码！")
+            driver.switch_to.frame("tcaptcha_iframe_dy")
+            process_captcha(driver, timeout)
+        except TimeoutException:
+            logger.info("未触发验证码")
+        
+        time.sleep(5)
+        driver.switch_to.default_content()
+        
+        if driver.current_url == "https://app.rainyun.com/dashboard":
+            logger.info("登录成功！")
+            logger.info("正在转到赚取积分页")
+            driver.get("https://app.rainyun.com/account/reward/earn")
+            driver.implicitly_wait(5)
             
-            logger.info("发起登录请求")
-            driver.get("https://app.rainyun.com/auth/login")
-            wait = WebDriverWait(driver, timeout)
-            
-            try:
-                username = wait.until(EC.visibility_of_element_located((By.NAME, 'login-field')))
-                password = wait.until(EC.visibility_of_element_located((By.NAME, 'login-password')))
-                login_button = wait.until(EC.visibility_of_element_located((By.XPATH,
-                                                                            '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
-                username.send_keys(current_user)
-                password.send_keys(current_pwd)
-                login_button.click()
-            except TimeoutException:
-                logger.error("页面加载超时，请尝试延长超时时间或切换到国内网络环境！")
-                return False
-            
-            try:
-                login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
-                logger.warning("触发验证码！")
-                driver.switch_to.frame("tcaptcha_iframe_dy")
-                process_captcha(driver, timeout)
-            except TimeoutException:
-                logger.info("未触发验证码")
-            
-            time.sleep(5)
+            earn = driver.find_element(By.XPATH,
+                                       '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
+            logger.info("点击赚取积分")
+            earn.click()
+            logger.info("处理验证码")
+            driver.switch_to.frame("tcaptcha_iframe_dy")
+            process_captcha(driver, timeout)
             driver.switch_to.default_content()
+            driver.implicitly_wait(5)
             
-            if driver.current_url == "https://app.rainyun.com/dashboard":
-                logger.info("登录成功！")
-                logger.info("正在转到赚取积分页")
-                driver.get("https://app.rainyun.com/account/reward/earn")
-                driver.implicitly_wait(5)
-                
-                earn = driver.find_element(By.XPATH,
-                                           '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
-                logger.info("点击赚取积分")
-                earn.click()
-                logger.info("处理验证码")
-                driver.switch_to.frame("tcaptcha_iframe_dy")
-                process_captcha(driver, timeout)
-                driver.switch_to.default_content()
-                driver.implicitly_wait(5)
-                
-                points_raw = driver.find_element(By.XPATH,
-                                                 '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3').get_attribute(
-                    "textContent")
-                current_points = int(''.join(re.findall(r'\d+', points_raw)))
-                logger.info(f"当前剩余积分: {current_points} | 约为 {current_points / 2000:.2f} 元")
-                logger.info("签到任务执行成功！")
-                return True
-            else:
-                logger.error("登录失败！")
-                return False
-                
-        finally:
-            driver.quit()
+            points_raw = driver.find_element(By.XPATH,
+                                             '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3').get_attribute(
+                "textContent")
+            current_points = int(''.join(re.findall(r'\d+', points_raw)))
+            logger.info(f"当前剩余积分: {current_points} | 约为 {current_points / 2000:.2f} 元")
+            logger.info("签到任务执行成功！")
+            return True
+        else:
+            logger.error("登录失败！")
+            return False
             
     except Exception as e:
         logger.error(f"签到任务执行失败: {e}")
+        import traceback
+        logger.error(f"详细错误信息: {traceback.format_exc()}")
         return False
+    finally:
+        # 确保在任何情况下都关闭 WebDriver
+        if driver is not None:
+            try:
+                logger.info("正在关闭 WebDriver...")
+                driver.quit()
+                logger.info("WebDriver 已安全关闭")
+            except Exception as e:
+                logger.error(f"关闭 WebDriver 时出错: {e}")
+                # 尝试强制终止进程
+                try:
+                    driver.service.process.kill()
+                    logger.warning("已强制终止 ChromeDriver 进程")
+                except:
+                    pass
 
 
 def scheduled_checkin():
@@ -369,13 +437,26 @@ def scheduled_checkin():
     # 显示下次执行时间
     logger.info("定时任务完成，查看下次执行安排...")
     time.sleep(1)  # 给schedule时间更新
-    next_run = schedule.next_run()
-    if next_run:
-        logger.info(f"✅ 程序继续运行，下次执行时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
-        time_diff = next_run - datetime.now()
-        hours, remainder = divmod(time_diff.total_seconds(), 3600)
-        minutes, _ = divmod(remainder, 60)
-        logger.info(f"距离下次执行还有: {int(hours)}小时{int(minutes)}分钟")
+    
+    # 手动计算下次执行时间，确保是未来时间
+    schedule_time = os.getenv("SCHEDULE_TIME", "08:00")
+    current_time = datetime.now()
+    next_run = current_time.replace(
+        hour=int(schedule_time.split(':')[0]), 
+        minute=int(schedule_time.split(':')[1]), 
+        second=0, 
+        microsecond=0
+    )
+    
+    # 如果计算出的时间已经过去，则推到下一天
+    if next_run <= current_time:
+        next_run += timedelta(days=1)
+    
+    logger.info(f"✅ 程序继续运行，下次执行时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+    time_diff = next_run - current_time
+    hours, remainder = divmod(time_diff.total_seconds(), 3600)
+    minutes, _ = divmod(remainder, 60)
+    logger.info(f"距离下次执行还有: {int(hours)}小时{int(minutes)}分钟")
     
     return success
 
@@ -409,6 +490,10 @@ if __name__ == "__main__":
     logger.info("初始化 ddddocr")
     ocr = ddddocr.DdddOcr(ocr=True, show_ad=False)
     det = ddddocr.DdddOcr(det=True, show_ad=False)
+    
+    # 程序启动时清理可能残留的僵尸进程
+    logger.info("程序启动，检查系统中的僵尸进程...")
+    cleanup_zombie_processes()
     
     if run_mode == "schedule":
         # 定时模式
