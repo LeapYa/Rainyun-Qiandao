@@ -22,6 +22,11 @@ services:
   rainyun-once:
     build: .
     container_name: rainyun-once
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       # 雨云登录凭据 - 支持多账号，用 | 分隔
       # 单账号: RAINYUN_USERNAME=your_email@example.com
@@ -56,6 +61,11 @@ services:
     build: .
     container_name: rainyun-schedule
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "7"
     environment:
       # 雨云登录凭据 - 支持多账号，用 | 分隔
       # 单账号: RAINYUN_USERNAME=your_email@example.com
@@ -74,7 +84,7 @@ services:
       - PYTHONUNBUFFERED=1
       - TZ=Asia/Shanghai
     volumes:
-      # 挂载日志目录（可选）
+      # 挂载日志目录（用于日志轮转和持久化）
       - ./logs:/app/logs
       # 挂载临时目录（用于验证码图片）
       - ./temp:/app/temp
