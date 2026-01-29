@@ -28,17 +28,15 @@ services:
         max-size: "10m"
         max-file: "3"
     environment:
-      # 雨云登录凭据 - 支持多账号，用 | 分隔
-      # 单账号: RAINYUN_USERNAME=your_email@example.com
-      # 多账号: RAINYUN_USERNAME=account1@example.com|account2@example.com
-      - RAINYUN_USERNAME=your_email@example.com
-      - RAINYUN_PASSWORD=your_password
+      # 雨云登录凭据 - 请在 .env 文件中配置
+      - RAINYUN_USERNAME=${RAINYUN_USERNAME}
+      - RAINYUN_PASSWORD=${RAINYUN_PASSWORD}
       # 运行模式配置
       - RUN_MODE=once
       # 可选配置
-      - DEBUG=false
-      - MAX_DELAY=5  # 减少随机延时，方便测试
-      - TIMEOUT=15000  # 调整超时时间
+      - DEBUG=${DEBUG:-false}
+      - MAX_DELAY=${MAX_DELAY:-5}
+      - TIMEOUT=${TIMEOUT:-15000}
       # Python环境配置
       - PYTHONUNBUFFERED=1
       - TZ=Asia/Shanghai
@@ -67,19 +65,16 @@ services:
         max-size: "10m"
         max-file: "7"
     environment:
-      # 雨云登录凭据 - 支持多账号，用 | 分隔
-      # 单账号: RAINYUN_USERNAME=your_email@example.com
-      # 多账号: RAINYUN_USERNAME=account1@example.com|account2@example.com|account3@example.com
-      #         RAINYUN_PASSWORD=password1|password2|password3
-      - RAINYUN_USERNAME=your_email@example.com
-      - RAINYUN_PASSWORD=your_password
+      # 雨云登录凭据 - 请在 .env 文件中配置
+      - RAINYUN_USERNAME=${RAINYUN_USERNAME}
+      - RAINYUN_PASSWORD=${RAINYUN_PASSWORD}
       # 运行模式配置
       - RUN_MODE=schedule
-      - SCHEDULE_TIME=08:00  # 每天8点执行，首次启动1分钟后执行
+      - SCHEDULE_TIME=${SCHEDULE_TIME:-08:00}
       # 可选配置
-      - DEBUG=false
-      - MAX_DELAY=5  # 减少随机延时，避免过长等待
-      - TIMEOUT=15000  # 调整超时时间
+      - DEBUG=${DEBUG:-false}
+      - MAX_DELAY=${MAX_DELAY:-5}
+      - TIMEOUT=${TIMEOUT:-15000}
       # Python环境配置
       - PYTHONUNBUFFERED=1
       - TZ=Asia/Shanghai
