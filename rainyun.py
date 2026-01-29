@@ -5,10 +5,6 @@ import random
 import time
 import schedule
 import sys
-# subprocess将在需要时导入
-# requests将在需要时导入
-# re将在需要时导入
-# signal将在需要时导入
 from datetime import datetime, timedelta
 
 # 全局变量，用于存储Selenium模块
@@ -408,11 +404,18 @@ def process_captcha(driver, timeout):
     ActionChains = modules['ActionChains']
     TimeoutException = modules['TimeoutException']
     
-    # 延迟导入，只在需要时加载
-    import cv2
-    import ddddocr
-    
     try:
+        wait = WebDriverWait(driver, min(timeout, 3))
+        try:
+            wait.until(EC.presence_of_element_located((By.ID, "slideBg")))
+        except TimeoutException:
+            logger.info("未检测到可处理验证码内容，跳过验证码处理")
+            return
+
+        # 延迟导入，只在需要时加载
+        import cv2
+        import ddddocr
+
         logger.info("初始化ddddocr")
         ocr = ddddocr.DdddOcr(ocr=True, show_ad=False)
         det = ddddocr.DdddOcr(det=True, show_ad=False)
@@ -556,6 +559,76 @@ def compute_similarity(img1_path, img2_path):
     return similarity, len(good)
 
 
+def dismiss_modal_confirm(driver, timeout):
+    modules = import_selenium_modules()
+    WebDriverWait = modules['WebDriverWait']
+    EC = modules['EC']
+    By = modules['By']
+    TimeoutException = modules['TimeoutException']
+
+    wait = WebDriverWait(driver, min(timeout, 5))
+    try:
+        confirm = wait.until(
+            EC.element_to_be_clickable(
+                (By.XPATH, "//footer[contains(@id,'modal') and contains(@id,'footer')]//button[contains(normalize-space(.), '确认')]")
+            )
+        )
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", confirm)
+        except Exception:
+            pass
+        time.sleep(0.2)
+        confirm.click()
+        logger.info("已关闭弹窗：确认")
+        time.sleep(0.5)
+        return True
+    except TimeoutException:
+        return False
+    except Exception:
+        try:
+            confirm = driver.find_element(By.XPATH, "//button[contains(normalize-space(.), '确认') and contains(@class,'btn')]")
+            driver.execute_script("arguments[0].click();", confirm)
+            logger.info("已关闭弹窗：确认")
+            time.sleep(0.5)
+            return True
+        except Exception:
+            return False
+
+
+def wait_captcha_or_modal(driver, timeout):
+    modules = import_selenium_modules()
+    WebDriverWait = modules['WebDriverWait']
+    EC = modules['EC']
+    By = modules['By']
+    TimeoutException = modules['TimeoutException']
+
+    def find_visible_tcaptcha_iframe():
+        try:
+            iframes = driver.find_elements(By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")
+        except Exception:
+            return None
+        for fr in iframes:
+            try:
+                if fr.is_displayed() and fr.size.get("width", 0) > 0 and fr.size.get("height", 0) > 0:
+                    return fr
+            except Exception:
+                continue
+        return None
+
+    end_time = time.time() + min(timeout, 8)
+    while time.time() < end_time:
+        if dismiss_modal_confirm(driver, timeout):
+            return "modal"
+        try:
+            iframe = find_visible_tcaptcha_iframe()
+            if iframe:
+                return "captcha"
+        except Exception:
+            pass
+        time.sleep(0.3)
+    return "none"
+
+
 def run_checkin(account_user=None, account_pwd=None):
     """执行签到任务"""
     # 导入Selenium模块
@@ -621,22 +694,33 @@ def run_checkin(account_user=None, account_pwd=None):
         
         time.sleep(5)
         driver.switch_to.default_content()
+        dismiss_modal_confirm(driver, timeout)
         
         if driver.current_url == "https://app.rainyun.com/dashboard":
             logger.info("登录成功！")
             logger.info("正在转到赚取积分页")
             driver.get("https://app.rainyun.com/account/reward/earn")
             driver.implicitly_wait(5)
+            time.sleep(1)
+            dismiss_modal_confirm(driver, timeout)
+            dismiss_modal_confirm(driver, timeout)
             
             earn = driver.find_element(By.XPATH,
                                        '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
             logger.info("点击赚取积分")
             earn.click()
-            logger.info("处理验证码")
-            driver.switch_to.frame("tcaptcha_iframe_dy")
-            process_captcha(driver, timeout)
-            driver.switch_to.default_content()
-            driver.implicitly_wait(5)
+            state = wait_captcha_or_modal(driver, timeout)
+            if state == "captcha":
+                logger.info("处理验证码")
+                try:
+                    captcha_iframe = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
+                    driver.switch_to.frame(captcha_iframe)
+                    process_captcha(driver, timeout)
+                finally:
+                    driver.switch_to.default_content()
+                driver.implicitly_wait(5)
+            else:
+                logger.info("未触发验证码（赚取积分）")
             
             points_raw = driver.find_element(By.XPATH,
                                              '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3').get_attribute(
