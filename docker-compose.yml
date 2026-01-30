@@ -31,6 +31,20 @@ services:
       # 雨云登录凭据 - 请在 .env 文件中配置
       - RAINYUN_USERNAME=${RAINYUN_USERNAME}
       - RAINYUN_PASSWORD=${RAINYUN_PASSWORD}
+      # Push Message
+      - PUSHPLUS_TOKEN=${PUSHPLUS_TOKEN}
+      # Push Message (WXPusher)
+      - WXPUSHER_APP_TOKEN=${WXPUSHER_APP_TOKEN}
+      - WXPUSHER_UIDS=${WXPUSHER_UIDS}
+      # Push Message (DingTalk)
+      - DINGTALK_ACCESS_TOKEN=${DINGTALK_ACCESS_TOKEN}
+      - DINGTALK_SECRET=${DINGTALK_SECRET}
+      # Push Message (Email)
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - SMTP_TO=${SMTP_TO}
       # 运行模式配置
       - RUN_MODE=once
       # 可选配置
@@ -68,6 +82,20 @@ services:
       # 雨云登录凭据 - 请在 .env 文件中配置
       - RAINYUN_USERNAME=${RAINYUN_USERNAME}
       - RAINYUN_PASSWORD=${RAINYUN_PASSWORD}
+      # Push Message
+      - PUSHPLUS_TOKEN=${PUSHPLUS_TOKEN}
+      # Push Message (WXPusher)
+      - WXPUSHER_APP_TOKEN=${WXPUSHER_APP_TOKEN}
+      - WXPUSHER_UIDS=${WXPUSHER_UIDS}
+      # Push Message (DingTalk)
+      - DINGTALK_ACCESS_TOKEN=${DINGTALK_ACCESS_TOKEN}
+      - DINGTALK_SECRET=${DINGTALK_SECRET}
+      # Push Message (Email)
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - SMTP_TO=${SMTP_TO}
       # 运行模式配置
       - RUN_MODE=schedule
       - SCHEDULE_TIME=${SCHEDULE_TIME:-08:00}

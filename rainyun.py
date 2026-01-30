@@ -99,7 +99,204 @@ def setup_logging():
     # 清理旧的日志文件（超过7天的）
     cleanup_old_logs(log_dir, days=7)
     
+    # 清理旧的日志文件（超过7天的）
+    cleanup_old_logs(log_dir, days=7)
+    
     return root_logger
+
+
+# ==========================================
+# Notification System
+# ==========================================
+
+class NotificationProvider:
+    """通知提供者基类"""
+    def send(self, title, context):
+        """
+        发送通知
+        :param title: 标题
+        :param context: 内容上下文，包含 {'html': str, 'markdown': str}
+        """
+        raise NotImplementedError
+
+class PushPlusProvider(NotificationProvider):
+    """PushPlus 推送渠道"""
+    def __init__(self, token):
+        self.token = token
+
+    def send(self, title, context):
+        import requests
+        content = context.get('html', '')
+        url = 'http://www.pushplus.plus/send'
+        data = {
+            "token": self.token,
+            "title": title,
+            "content": content,
+            "template": "html"
+        }
+        try:
+            logging.info(f"Sending PushPlus notification: {title}")
+            response = requests.post(url, json=data, timeout=10)
+            result = response.json()
+            if result.get('code') == 200:
+                logging.info("PushPlus notification sent successfully")
+                return True
+            else:
+                logging.error(f"PushPlus notification failed: {result.get('msg')}")
+                return False
+        except Exception as e:
+            logging.error(f"Error sending PushPlus notification: {e}")
+            return False
+
+class WXPusherProvider(NotificationProvider):
+    """WXPusher 推送渠道"""
+    def __init__(self, app_token, uids):
+        self.app_token = app_token
+        self.uids = uids if isinstance(uids, list) else [uid.strip() for uid in uids.split(',') if uid.strip()]
+
+    def send(self, title, context):
+        import requests
+        content = context.get('html', '')
+        url = 'https://wxpusher.zjiecode.com/api/send/message'
+        data = {
+            "appToken": self.app_token,
+            "content": content,
+            "summary": title,
+            "contentType": 2,  # 1=Text, 2=HTML
+            "uids": self.uids
+        }
+        try:
+            logging.info(f"Sending WXPusher notification: {title}")
+            response = requests.post(url, json=data, timeout=10)
+            result = response.json()
+            if result.get('code') == 1000: # WXPusher success code is 1000
+                logging.info("WXPusher notification sent successfully")
+                return True
+            else:
+                logging.error(f"WXPusher notification failed: {result.get('msg')}")
+                return False
+        except Exception as e:
+            logging.error(f"Error sending WXPusher notification: {e}")
+            return False
+
+class DingTalkProvider(NotificationProvider):
+    """钉钉机器人推送渠道"""
+    def __init__(self, access_token, secret=None):
+        self.access_token = access_token
+        self.secret = secret
+
+    def send(self, title, context):
+        import requests
+        import time
+        import hmac
+        import hashlib
+        import base64
+        import urllib.parse
+        
+        content = context.get('markdown', '')
+        # 钉钉 Markdown 需要 title 字段
+        # content 必须包含 title，这里组合一下
+        md_text = f"# {title}\n\n{content}"
+        
+        url = 'https://oapi.dingtalk.com/robot/send'
+        params = {'access_token': self.access_token}
+        
+        if self.secret:
+            timestamp = str(round(time.time() * 1000))
+            secret_enc = self.secret.encode('utf-8')
+            string_to_sign = '{}\n{}'.format(timestamp, self.secret)
+            string_to_sign_enc = string_to_sign.encode('utf-8')
+            hmac_code = hmac.new(secret_enc, string_to_sign_enc, digestmod=hashlib.sha256).digest()
+            sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+            params['timestamp'] = timestamp
+            params['sign'] = sign
+
+        data = {
+            "msgtype": "markdown",
+            "markdown": {
+                "title": title,
+                "text": md_text
+            }
+        }
+        
+        try:
+            logging.info(f"Sending DingTalk notification: {title}")
+            response = requests.post(url, params=params, json=data, timeout=10)
+            result = response.json()
+            if result.get('errcode') == 0:
+                logging.info("DingTalk notification sent successfully")
+                return True
+            else:
+                logging.error(f"DingTalk notification failed: {result.get('errmsg')}")
+                return False
+        except Exception as e:
+            logging.error(f"Error sending DingTalk notification: {e}")
+            return False
+
+class EmailProvider(NotificationProvider):
+    """邮件推送渠道"""
+    def __init__(self, host, port, user, password, to_email):
+        self.host = host
+        self.port = int(port)
+        self.user = user
+        self.password = password
+        self.to_email = to_email
+
+    def send(self, title, context):
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        from email.header import Header
+        
+        content = context.get('html', '')
+        
+        try:
+            message = MIMEMultipart()
+            message['From'] = f"Rainyun-Qiandao <{self.user}>"
+            message['To'] = self.to_email
+            message['Subject'] = Header(title, 'utf-8')
+            
+            message.attach(MIMEText(content, 'html', 'utf-8'))
+            
+            logging.info(f"Sending Email notification to {self.to_email}")
+            
+            # 连接 SMTP 服务器
+            if self.port == 465:
+                server = smtplib.SMTP_SSL(self.host, self.port)
+            else:
+                server = smtplib.SMTP(self.host, self.port)
+                # 尝试启用 TLS
+                try:
+                    server.starttls()
+                except:
+                    pass
+            
+            server.login(self.user, self.password)
+            server.sendmail(self.user, [self.to_email], message.as_string())
+            server.quit()
+            
+            logging.info("Email notification sent successfully")
+            return True
+        except Exception as e:
+            logging.error(f"Error sending Email notification: {e}")
+            return False
+
+class NotificationManager:
+    """通知管理器"""
+    def __init__(self):
+        self.providers = []
+
+    def add_provider(self, provider):
+        self.providers.append(provider)
+
+    def send_all(self, title, context):
+        if not self.providers:
+            logging.info("No notification providers configured.")
+            return
+
+        logging.info(f"Sending notifications to {len(self.providers)} providers...")
+        for provider in self.providers:
+            provider.send(title, context)
 
 
 def cleanup_old_logs(log_dir, days=7):
@@ -260,6 +457,204 @@ def get_random_user_agent():
     return random.choice(user_agents)
 
 
+# SVG图标
+SVG_ICONS = {
+    'success': '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#10B981" width="24" height="24"><path fill-rule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12zm13.36-1.814a.75.75 0 10-1.22-.872l-3.236 4.53L9.53 12.22a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.14-.094l3.75-5.25z" clip-rule="evenodd" /></svg>''',
+    'error': '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#EF4444" width="24" height="24"><path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zm-1.72 6.97a.75.75 0 10-1.06 1.06L10.94 12l-1.72 1.72a.75.75 0 101.06 1.06L12 13.06l1.72 1.72a.75.75 0 101.06-1.06L13.06 12l1.72-1.72a.75.75 0 10-1.06-1.06L12 10.94l-1.72-1.72z" clip-rule="evenodd" /></svg>''',
+    'user': '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#6B7280" width="20" height="20"><path fill-rule="evenodd" d="M7.5 6a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0zM3.751 20.105a8.25 8.25 0 0116.498 0 .75.75 0 01-.437.695A18.683 18.683 0 0112 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 01-.437-.695z" clip-rule="evenodd" /></svg>''',
+    'coin': '''<svg class="icon" viewBox="0 0 1114 1024" xmlns="http://www.w3.org/2000/svg" width="200" height="200"><path d="M807.511 400.666a512 512 0 0 0-60.15-53.873c-3.072-2.345-5.427-3.983-8.15-5.98 38.066-13.077 64.7-44.38 64.7-81.434 0-49.9-47.37-88.08-103.618-88.08a99.4 99.4 0 0 0-35.558 6.498 79 79 0 0 0-11.771 5.591c-1.966.83-6.16-.097-7.312-1.53l-.05.035c-4.291-6.43-10.763-14.402-20.168-22.569-17.9-15.554-39.092-25.15-63.294-25.15s-45.384 9.596-63.288 25.15c-9.19 7.977-15.498 15.713-19.804 22.078l-.026-.02c-1.628 1.92-5.852 2.928-7.322 2.221a78.4 78.4 0 0 0-12.144-5.811 99.5 99.5 0 0 0-35.564-6.502c-56.248 0-103.613 38.185-103.613 88.079 0 31.683 19.543 59.105 48.957 74.624a495 495 0 0 0-9.405 6.84 468 468 0 0 0-60.058 53.315C244.265 452.956 210.5 520.212 210.5 594.872c0 207.022 154.28 305.48 340.131 305.48 77.891 0 154.03-15.54 215.64-52.219 83.599-49.792 131.153-133.427 131.153-253.26-.015-70.165-33.996-135.348-89.912-194.207M646.564 601.43c10.598 0 19.184 8.791 19.184 19.615 0 10.829-8.59 19.625-19.184 19.625H569.81v56.489c0 8.289-8.591 15.006-19.185 15.006-10.598 0-19.184-6.717-19.184-15.006v-56.49h-76.754c-10.599 0-19.185-8.79-19.185-19.62s8.591-19.614 19.185-19.614h76.754V581.82h-76.754c-10.599 0-19.185-8.785-19.185-19.614s8.591-19.615 19.185-19.615h78.397l-72.78-74.399a19.917 19.917 0 0 1 0-27.735 18.893 18.893 0 0 1 27.135 0l63.186 64.584 63.186-64.584a18.903 18.903 0 0 1 26.721-.425l.42.425a19.927 19.927 0 0 1 0 27.735l-72.78 74.399h78.402c10.598 0 19.18 8.78 19.18 19.615s-8.587 19.614-19.18 19.614h-76.759v19.61z" fill="#f59e0b"/></svg>'''
+}
+
+
+def generate_html_report(results):
+    """生成 HTML 签到报告"""
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    success_count = len([r for r in results if r['status']])
+    total_count = len(results)
+    
+    # 基础样式
+    style_block = """
+    <style>
+        :root {
+            --bg-body: #f9fafb;
+            --bg-card: #ffffff;
+            --text-main: #111827;
+            --text-sub: #6b7280;
+            --border: #e5e7eb;
+            --bg-success: #ecfdf5;
+            --text-success: #059669;
+            --bg-error: #fef2f2;
+            --text-error: #dc2626;
+            --bg-footer: #f3f4f6;
+            --text-footer: #9ca3af;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-body: #18181b;
+                --bg-card: #27272a;
+                --text-main: #f3f4f6;
+                --text-sub: #9ca3af;
+                --border: #3f3f46;
+                --bg-success: #064e3b;
+                --text-success: #34d399;
+                --bg-error: #7f1d1d;
+                --text-error: #f87171;
+                --bg-footer: #1f2937;
+                --text-footer: #6b7280;
+            }
+        }
+        .container { max-width: 600px; margin: 0 auto; background-color: var(--bg-body); border-radius: 16px; overflow: hidden; border: 1px solid var(--border); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+        .header { background-color: var(--bg-card); padding: 24px; border-bottom: 1px solid var(--border); }
+        .title { margin: 0; color: var(--text-main); font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+        .subtitle { margin-top: 8px; color: var(--text-sub); font-size: 13px; font-weight: 500;}
+        .badges { margin-top: 16px; display: flex; gap: 8px; }
+        .badge-success { background-color: var(--bg-success); color: var(--text-success); padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 600; }
+        .badge-error { background-color: var(--bg-error); color: var(--text-error); padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 600; }
+        .content { padding: 16px; background-color: var(--bg-body); }
+        .card { background-color: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06); }
+        .row-item { display: flex; align-items: center; gap: 6px; }
+        .footer { background-color: var(--bg-body); padding: 20px; text-align: center; font-size: 12px; color: var(--text-footer); }
+        /* Fix SVG size */
+        svg { width: 20px; height: 20px; display: block; }
+    </style>
+    """
+    
+    html = f"""
+    {style_block}
+    <div class="container">
+        <div class="header">
+            <h3 class="title">
+                🌧️ 雨云签到报告
+            </h3>
+            <div class="subtitle">
+                {now_str}
+            </div>
+            <div class="badges">
+                <span class="badge-success">
+                    成功: {success_count}
+                </span>
+                <span class="badge-error">
+                    失败: {total_count - success_count}
+                </span>
+            </div>
+        </div>
+        
+        <div class="content">
+    """
+    
+        
+    for res in results:
+        status_color = "var(--text-success)" if res['status'] else "var(--text-error)"
+        status_bg = "var(--bg-success)" if res['status'] else "var(--bg-error)"
+        
+        points_element = ""
+        if res.get('points'):
+            points = res['points']
+            money = points / 2000
+            points_element = f"""
+            <div class="row-item" style="color: #f59e0b; font-weight: 500;">
+                {SVG_ICONS['coin']}
+                <span>{points} (≈￥{money:.2f})</span>
+            </div>
+            """
+        else:
+            # 失败时显示错误信息
+            points_element = f"""
+            <div class="row-item" style="color: var(--text-error);">
+               <span>{res['msg']}</span>
+            </div>
+            """
+
+        html += f"""
+        <div class="card">
+            <!-- 上半部分：用户信息 + 状态徽标 -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <div class="row-item" style="font-weight: 600; font-size: 15px;">
+                    {SVG_ICONS['user']}
+                    <span>{res['username']}</span>
+                </div>
+                <span style="background-color: {status_bg}; color: {status_color}; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600;">
+                    {'签到成功' if res['status'] else '签到失败'}
+                </span>
+            </div>
+            
+            <!-- 分割线 -->
+            <div style="height: 1px; background-color: var(--border); margin-bottom: 12px; opacity: 0.5;"></div>
+            
+            <!-- 下半部分：积分信息/错误信息 + 更多细节 -->
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
+                {points_element}
+                <div class="row-item" style="color: var(--text-sub); font-size: 12px;">
+                    <span>重试: {res.get('retries', 0)}</span>
+                </div>
+            </div>
+        </div>
+        """
+        
+    html += """
+        </div>
+        <div class="footer">
+            Powered by Rainyun-Qiandao
+        </div>
+    </div>
+    """
+    return html
+
+
+def generate_markdown_report(results):
+    """生成 Markdown 签到报告"""
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    success_count = len([r for r in results if r['status']])
+    total_count = len(results)
+    
+    md = f"> {now_str}\n\n"
+    md += f"**状态**: ✅ {success_count} 成功 / ❌ {total_count - success_count} 失败\n\n"
+    md += "---\n"
+    
+    for res in results:
+        status_icon = "✅" if res['status'] else "❌"
+        md += f"### {status_icon} {res['username']}\n"
+        
+        if res.get('points'):
+            points = res['points']
+            money = points / 2000
+            md += f"- **积分**: {points} (≈￥{money:.2f})\n"
+        
+        md += f"- **消息**: {res['msg']}\n"
+        if res.get('retries', 0) > 0:
+            md += f"- **重试**: {res['retries']}\n"
+        md += "\n"
+        
+    md += "---\n"
+    md += "Powered by Rainyun-Qiandao"
+    return md
+
+
+def send_pushplus_notification(token, title, content):
+    """发送 PushPlus 通知"""
+    import requests
+    url = 'http://www.pushplus.plus/send'
+    data = {
+        "token": token,
+        "title": title,
+        "content": content,
+        "template": "html"
+    }
+    try:
+        logging.info(f"Sending PushPlus notification: {title}")
+        response = requests.post(url, json=data, timeout=10)
+        result = response.json()
+        if result.get('code') == 200:
+            logging.info("PushPlus notification sent successfully")
+            return True
+        else:
+            logging.error(f"PushPlus notification failed: {result.get('msg')}")
+            return False
+    except Exception as e:
+        logging.error(f"Error sending PushPlus notification: {e}")
+        return False
+
+
 def parse_accounts():
     """解析多账号配置"""
     usernames = os.getenv("RAINYUN_USERNAME", "").split("|")
@@ -297,12 +692,14 @@ def run_all_accounts():
     
     accounts = parse_accounts()
     success_count = 0
+    results = []
     
     for i, (username, password) in enumerate(accounts, 1):
         logger.info(f"========== 开始执行第 {i}/{len(accounts)} 个账号签到 ==========")
-        success = run_checkin(username, password)
+        result = run_checkin(username, password)
+        results.append(result)
         
-        if success:
+        if result['status']:
             success_count += 1
             logger.info(f"✅ 账号 {i} 签到成功")
         else:
@@ -317,7 +714,64 @@ def run_all_accounts():
             logger.info(f"账号间延时等待 {delay} 秒...")
             time.sleep(delay)
     
-    logger.info(f"========== 所有账号签到完成: {success_count}/{len(accounts)} 成功 ==========")
+    # 统计结果并发送通知
+    if accounts:
+        # 初始化通知管理器
+        notification_manager = NotificationManager()
+        
+        # 注册 PushPlus
+        push_token = os.getenv("PUSHPLUS_TOKEN")
+        if push_token:
+            logger.info("Configuring PushPlus provider...")
+            notification_manager.add_provider(PushPlusProvider(push_token))
+            
+        # 注册 WXPusher
+        wx_app_token = os.getenv("WXPUSHER_APP_TOKEN")
+        wx_uids = os.getenv("WXPUSHER_UIDS")
+        if wx_app_token and wx_uids:
+            logger.info("Configuring WXPusher provider...")
+            notification_manager.add_provider(WXPusherProvider(wx_app_token, wx_uids))
+            
+        # 注册 DingTalk
+        dingtalk_token = os.getenv("DINGTALK_ACCESS_TOKEN")
+        dingtalk_secret = os.getenv("DINGTALK_SECRET")
+        if dingtalk_token:
+            logger.info("Configuring DingTalk provider...")
+            notification_manager.add_provider(DingTalkProvider(dingtalk_token, dingtalk_secret))
+            
+        # 注册 Email
+        smtp_host = os.getenv("SMTP_HOST")
+        smtp_port = os.getenv("SMTP_PORT")
+        smtp_user = os.getenv("SMTP_USER")
+        smtp_pass = os.getenv("SMTP_PASS")
+        smtp_to = os.getenv("SMTP_TO")
+        
+        if smtp_host and smtp_port and smtp_user and smtp_pass:
+            # 如果没填收件人，默认发给第一个签到账号（如果它是邮箱的话）
+            if not smtp_to and accounts:
+                first_account = accounts[0][0]
+                if '@' in first_account:
+                    smtp_to = first_account
+                    logger.info(f"配置提示: 未填写 SMTP_TO，将使用第一个雨云账号 ({smtp_to}) 作为收件人")
+            
+            if smtp_to:
+                logger.info("Configuring Email provider...")
+                notification_manager.add_provider(EmailProvider(smtp_host, smtp_port, smtp_user, smtp_pass, smtp_to))
+            
+        # 发送通知
+        if notification_manager.providers:
+            logger.info("正在生成详细推送报告...")
+            html_content = generate_html_report(results)
+            markdown_content = generate_markdown_report(results)
+            
+            context = {
+                'html': html_content,
+                'markdown': markdown_content
+            }
+            
+            success_count = len([r for r in results if r['status']])
+            title = f"雨云签到: {success_count}/{len(accounts)} 成功"
+            notification_manager.send_all(title, context)
     
     # 任务结束后再次清理
     logger.info("任务完成，执行最终清理...")
@@ -394,7 +848,7 @@ def get_height_from_style(style):
     return re.search(r'height:\s*([\d.]+)px', style).group(1)
 
 
-def process_captcha(driver, timeout):
+def process_captcha(driver, timeout, retry_stats=None):
     """处理验证码（延迟加载OCR模型）"""
     # 导入Selenium模块
     modules = import_selenium_modules()
@@ -403,6 +857,9 @@ def process_captcha(driver, timeout):
     By = modules['By']
     ActionChains = modules['ActionChains']
     TimeoutException = modules['TimeoutException']
+    
+    if retry_stats is None:
+        retry_stats = {'count': 0}
     
     try:
         wait = WebDriverWait(driver, min(timeout, 3))
@@ -469,15 +926,19 @@ def process_captcha(driver, timeout):
                     return
                 else:
                     logger.error("验证码未通过，正在重试")
+                    retry_stats['count'] += 1
             else:
                 logger.error("验证码识别失败，正在重试")
+                retry_stats['count'] += 1
         else:
             logger.error("当前验证码识别率低，尝试刷新")
+            retry_stats['count'] += 1
+        
         reload = driver.find_element(By.XPATH, '//*[@id="reload"]')
         time.sleep(5)
         reload.click()
         time.sleep(5)
-        process_captcha(driver, timeout)
+        process_captcha(driver, timeout, retry_stats)
     except TimeoutException:
         logger.error("获取验证码图片失败")
     finally:
@@ -647,6 +1108,7 @@ def run_checkin(account_user=None, account_pwd=None):
     current_user = account_user or user
     current_pwd = account_pwd or pwd
     driver = None  # 初始化为 None，确保在任何情况下都能安全清理
+    retry_stats = {'count': 0}
     
     try:
         logger.info(f"开始执行签到任务... 账号: {current_user[:5]}***{current_user[-5:] if len(current_user) > 10 else current_user}")
@@ -682,13 +1144,19 @@ def run_checkin(account_user=None, account_pwd=None):
             login_button.click()
         except TimeoutException:
             logger.error("页面加载超时，请尝试延长超时时间或切换到国内网络环境！")
-            return False
+            return {
+                'status': False,
+                'msg': '页面加载超时',
+                'points': 0,
+                'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+                'retries': retry_stats['count']
+            }
         
         try:
             login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
             logger.warning("触发验证码！")
             driver.switch_to.frame("tcaptcha_iframe_dy")
-            process_captcha(driver, timeout)
+            process_captcha(driver, timeout, retry_stats)
         except TimeoutException:
             logger.info("未触发验证码")
         
@@ -715,7 +1183,7 @@ def run_checkin(account_user=None, account_pwd=None):
                 try:
                     captcha_iframe = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
                     driver.switch_to.frame(captcha_iframe)
-                    process_captcha(driver, timeout)
+                    process_captcha(driver, timeout, retry_stats)
                 finally:
                     driver.switch_to.default_content()
                 driver.implicitly_wait(5)
@@ -729,16 +1197,34 @@ def run_checkin(account_user=None, account_pwd=None):
             current_points = int(''.join(re.findall(r'\d+', points_raw)))
             logger.info(f"当前剩余积分: {current_points} | 约为 {current_points / 2000:.2f} 元")
             logger.info("签到任务执行成功！")
-            return True
+            return {
+                'status': True,
+                'msg': '签到成功',
+                'points': current_points,
+                'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+                'retries': retry_stats['count']
+            }
         else:
             logger.error("登录失败！")
-            return False
+            return {
+                'status': False,
+                'msg': '登录失败',
+                'points': 0,
+                'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+                'retries': retry_stats['count']
+            }
             
     except Exception as e:
         logger.error(f"签到任务执行失败: {e}")
         import traceback
         logger.error(f"详细错误信息: {traceback.format_exc()}")
-        return False
+        return {
+            'status': False,
+            'msg': f'执行异常: {str(e)[:50]}...',
+            'points': 0,
+            'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+            'retries': retry_stats['count']
+        }
     finally:
         # 确保在任何情况下都关闭 WebDriver
         if driver is not None:
@@ -847,12 +1333,15 @@ if __name__ == "__main__":
 
     # 初始化日志（使用新的日志轮转功能）
     logger = setup_logging()
-    ver = "2.3-scheduler"
+    ver = "2.2-docker-notify"
     logger.info("------------------------------------------------------------------")
-    logger.info(f"雨云签到工具 v{ver} by SerendipityR ~")
-    logger.info("Github发布页: https://github.com/SerendipityR-2022/Rainyun-Qiandao")
+    logger.info(f"雨云签到工具 v{ver} by LeapYa ~")
+    logger.info("Github发布页: https://github.com/LeapYa/Rainyun-Qiandao")
     logger.info("------------------------------------------------------------------")
     logger.info("已启用日志轮转功能，将自动清理7天前的日志")
+    if debug:
+        logger.info(f"当前配置: MAX_DELAY={max_delay}分钟, TIMEOUT={timeout}秒")
+
     
     # 程序启动时执行日志清理
     cleanup_logs_on_startup()
