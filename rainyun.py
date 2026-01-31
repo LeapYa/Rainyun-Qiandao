@@ -445,16 +445,255 @@ def cleanup_zombie_processes():
         logger.debug(f"僵尸进程清理失败（可忽略）: {e}")
 
 
-def get_random_user_agent():
-    """获取随机 User-Agent"""
+def get_random_user_agent(account_id: str) -> str:
+    """
+    获取 User-Agent，基于当前时间动态生成版本
+    """
+    import hashlib
+    import datetime
+    # 基于时间推算当前 Chrome 版本（Chrome 100 发布于 2022-03-29）
+    base_date = datetime.date(2022, 3, 29)
+    base_version = 100
+    days_diff = (datetime.date.today() - base_date).days
+    current_ver = base_version + (days_diff // 32)
+    
+    # 构建 UA 列表
     user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+        f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{current_ver}.0.0.0 Safari/537.36",
+        f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{current_ver-1}.0.0.0 Safari/537.36",
+        f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{current_ver-2}.0.0.0 Safari/537.36",
+        f"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:{current_ver-10}.0) Gecko/20100101 Firefox/{current_ver-10}.0",
+        f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{current_ver}.0.0.0 Safari/537.36 Edg/{current_ver}.0.0.0"
     ]
-    return random.choice(user_agents)
+    
+    # 基于账号确定性选择
+    account_hash = hashlib.md5(account_id.encode()).hexdigest()
+    seed = int(account_hash[:8], 16)
+    rng = random.Random(seed)
+    return rng.choice(user_agents)
+
+
+def generate_fingerprint_script(account_id: str):
+    """
+    生成浏览器指纹随机化脚本
+    基于账号ID生成确定性指纹，确保：
+    - 同一账号每次签到指纹相同（持久化）
+    - 不同账号之间指纹不同（区分）
+    
+    :param account_id: 账号标识（如用户名），用于生成确定性种子
+    """
+    import hashlib
+    
+    # 基于账号生成确定性种子
+    account_hash = hashlib.md5(account_id.encode()).hexdigest()
+    seed = int(account_hash[:8], 16)  # 取前8位十六进制作为种子
+    
+    # 使用种子创建确定性随机数生成器
+    rng = random.Random(seed)
+    
+    # 随机 WebGL 渲染器和厂商（基于账号确定性选择）
+    webgl_vendors = [
+        ("Intel Inc.", "Intel Iris Xe Graphics"),
+        ("Intel Inc.", "Intel UHD Graphics 770"),
+        ("Intel Inc.", "Intel UHD Graphics 730"),
+        ("Intel Inc.", "Intel Iris Plus Graphics"),
+        ("Intel Inc.", "Intel Arc A770"),
+        ("Intel Inc.", "Intel Arc A750"),
+        ("Intel Inc.", "Intel Arc B580"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 4090/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 4080 SUPER/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 4070 Ti SUPER/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 4070 SUPER/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 4070/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 4060 Ti/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 4060/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 5090/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 5080/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 5070 Ti/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 5070/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 3080/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 3070/PCIe/SSE2"),
+        ("NVIDIA Corporation", "NVIDIA GeForce RTX 3060/PCIe/SSE2"),
+        ("AMD", "AMD Radeon RX 7900 XTX"),
+        ("AMD", "AMD Radeon RX 7900 XT"),
+        ("AMD", "AMD Radeon RX 7800 XT"),
+        ("AMD", "AMD Radeon RX 7700 XT"),
+        ("AMD", "AMD Radeon RX 7600 XT"),
+        ("AMD", "AMD Radeon RX 7600"),
+        ("AMD", "AMD Radeon RX 9070 XT"),
+        ("AMD", "AMD Radeon RX 9070"),
+        ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0)"),
+        ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0)"),
+        ("Google Inc. (Intel)", "ANGLE (Intel, Intel UHD Graphics 770 Direct3D11 vs_5_0 ps_5_0)"),
+        ("Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 7800 XT Direct3D11 vs_5_0 ps_5_0)")
+    ]
+    vendor, renderer = rng.choice(webgl_vendors)
+    
+    # 确定性硬件并发数 (CPU 核心数)
+    hardware_concurrency = rng.choice([4, 6, 8, 12, 16])
+    
+    # 确定性设备内存 (GB)
+    device_memory = rng.choice([8, 16, 32])
+    
+    # 确定性语言
+    languages = [
+        ["zh-CN", "zh", "en-US", "en"],
+        ["zh-CN", "zh"],
+        ["en-US", "en", "zh-CN"],
+        ["zh-CN", "en-US"],
+    ]
+    language = rng.choice(languages)
+    
+    # Canvas 噪声种子（基于账号确定性）
+    canvas_noise_seed = rng.randint(1, 1000000)
+    
+    # AudioContext 噪声（基于账号确定性）
+    audio_noise = rng.uniform(0.00001, 0.0001)
+    
+    # 插件数量（基于账号确定性）
+    plugins_length = rng.randint(0, 5)
+    
+    logger.debug(f"账号指纹: WebGL={renderer[:30]}..., CPU={hardware_concurrency}核, 内存={device_memory}GB")
+    
+    fingerprint_script = f"""
+    (function() {{
+        'use strict';
+        
+        // ===============================
+        // WebGL 指纹随机化
+        // ===============================
+        const getParameterProxyHandler = {{
+            apply: function(target, thisArg, args) {{
+                const param = args[0];
+                const gl = thisArg;
+                
+                // UNMASKED_VENDOR_WEBGL
+                if (param === 37445) {{
+                    return '{vendor}';
+                }}
+                // UNMASKED_RENDERER_WEBGL
+                if (param === 37446) {{
+                    return '{renderer}';
+                }}
+                return Reflect.apply(target, thisArg, args);
+            }}
+        }};
+        
+        // 代理 WebGL getParameter
+        try {{
+            const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = new Proxy(originalGetParameter, getParameterProxyHandler);
+        }} catch(e) {{}}
+        
+        try {{
+            const originalGetParameter2 = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = new Proxy(originalGetParameter2, getParameterProxyHandler);
+        }} catch(e) {{}}
+        
+        // ===============================
+        // Canvas 指纹随机化（添加噪声）
+        // ===============================
+        const noiseSeed = {canvas_noise_seed};
+        
+        // 简单的伪随机数生成器（基于种子）
+        function seededRandom(seed) {{
+            const x = Math.sin(seed) * 10000;
+            return x - Math.floor(x);
+        }}
+        
+        const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+        HTMLCanvasElement.prototype.toDataURL = function(type, quality) {{
+            const canvas = this;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {{
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const data = imageData.data;
+                // 添加微小噪声
+                for (let i = 0; i < data.length; i += 4) {{
+                    // 只修改少量像素，且变化很小
+                    if (seededRandom(noiseSeed + i) < 0.01) {{
+                        data[i] = data[i] ^ 1;     // R
+                        data[i+1] = data[i+1] ^ 1; // G
+                    }}
+                }}
+                ctx.putImageData(imageData, 0, 0);
+            }}
+            return originalToDataURL.apply(this, arguments);
+        }};
+        
+        // ===============================
+        // AudioContext 指纹随机化
+        // ===============================
+        const audioNoise = {audio_noise};
+        
+        if (window.OfflineAudioContext) {{
+            const originalGetChannelData = AudioBuffer.prototype.getChannelData;
+            AudioBuffer.prototype.getChannelData = function(channel) {{
+                const result = originalGetChannelData.call(this, channel);
+                // 使用确定性种子添加噪声
+                for (let i = 0; i < result.length; i += 100) {{
+                    const noise = Math.sin({canvas_noise_seed} + i) * audioNoise;
+                    result[i] = result[i] + noise;
+                }}
+                return result;
+            }};
+        }}
+        
+        // ===============================
+        // 硬件信息随机化
+        // ===============================
+        Object.defineProperty(navigator, 'hardwareConcurrency', {{
+            get: () => {hardware_concurrency}
+        }});
+        
+        Object.defineProperty(navigator, 'deviceMemory', {{
+            get: () => {device_memory}
+        }});
+        
+        // ===============================
+        // 语言随机化
+        // ===============================
+        Object.defineProperty(navigator, 'languages', {{
+            get: () => {language}
+        }});
+        
+        Object.defineProperty(navigator, 'language', {{
+            get: () => '{language[0]}'
+        }});
+        
+        // ===============================
+        // 插件列表随机化（返回空或伪造）
+        // ===============================
+        Object.defineProperty(navigator, 'plugins', {{
+            get: () => {{
+                return {{
+                    length: {plugins_length},
+                    item: () => null,
+                    namedItem: () => null,
+                    refresh: () => {{}},
+                    [Symbol.iterator]: function* () {{}}
+                }};
+            }}
+        }});
+        
+        // 屏蔽 WebDriver 检测
+        Object.defineProperty(navigator, 'webdriver', {{
+            get: () => undefined
+        }});
+        
+        // 修改 chrome 对象
+        window.chrome = {{
+            runtime: {{}},
+            loadTimes: function() {{}},
+            csi: function() {{}},
+            app: {{}}
+        }};
+        
+        console.log('[Fingerprint] Browser fingerprint initialized (deterministic)');
+    }})();
+    """
+    
+    return fingerprint_script
 
 
 # SVG图标
@@ -780,7 +1019,11 @@ def run_all_accounts():
     return success_count > 0
 
 
-def init_selenium():
+def init_selenium(account_id: str):
+    """
+    初始化 Selenium WebDriver
+    :param account_id: 账号标识，用于生成该账号专属的 User-Agent
+    """
     # 导入Selenium模块
     modules = import_selenium_modules()
     webdriver = modules['webdriver']
@@ -793,10 +1036,20 @@ def init_selenium():
     ops.add_argument("--disable-extensions")
     ops.add_argument("--disable-plugins")
     
-    # 添加随机 User-Agent
-    user_agent = get_random_user_agent()
+    # 添加账号专属 User-Agent（相同账号每次相同）
+    user_agent = get_random_user_agent(account_id)
     ops.add_argument(f"--user-agent={user_agent}")
     logger.info(f"使用 User-Agent: {user_agent[:50]}...")  # 只显示前50个字符
+    
+    # 开启无图模式 (加速加载)
+    ops.add_argument('blink-settings=imagesEnabled=false')
+    prefs = {
+        "profile.managed_default_content_settings.images": 2,
+        "profile.managed_default_content_settings.stylesheets": 2,  # 不禁止加载CSS
+    }
+    # 仅禁用图片，保留CSS以防元素定位失效
+    prefs = {"profile.managed_default_content_settings.images": 2}
+    ops.add_experimental_option("prefs", prefs)
     
     if debug:
         ops.add_experimental_option("detach", True)
@@ -813,23 +1066,33 @@ def init_selenium():
         return webdriver.Chrome(service=service, options=ops)
     else:
         # Windows 环境
-        service = Service("chromedriver.exe")
+        # 使用 Selenium Manager 自动处理驱动下载和路径匹配
+        service = Service()
         return webdriver.Chrome(service=service, options=ops)
 
 
-def download_image(url, filename):
+def download_image(url, filename, user_agent=None):
     # 延迟导入requests模块
     import requests
     
     os.makedirs("temp", exist_ok=True)
-    response = requests.get(url, timeout=10)
-    if response.status_code == 200:
-        path = os.path.join("temp", filename)
-        with open(path, "wb") as f:
-            f.write(response.content)
-        return True
-    else:
-        logger.error("下载图片失败！")
+    
+    headers = {}
+    if user_agent:
+        headers['User-Agent'] = user_agent
+        
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            path = os.path.join("temp", filename)
+            with open(path, "wb") as f:
+                f.write(response.content)
+            return True
+        else:
+            logger.error(f"下载图片失败！状态码: {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"下载图片异常: {e}")
         return False
 
 
@@ -959,15 +1222,24 @@ def download_captcha_img(driver, timeout):
             file_path = os.path.join("temp", filename)
             if os.path.isfile(file_path) or os.path.islink(file_path):
                 os.remove(file_path)
+                
+    # 获取当前浏览器的 User-Agent
+    try:
+        current_ua = driver.execute_script("return navigator.userAgent;")
+        logger.debug(f"下载图片使用 UA: {current_ua[:50]}...")
+    except Exception:
+        current_ua = None
+        
     slideBg = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="slideBg"]')))
     img1_style = slideBg.get_attribute("style")
     img1_url = get_url_from_style(img1_style)
     logger.info("开始下载验证码图片(1): " + img1_url)
-    download_image(img1_url, "captcha.jpg")
+    download_image(img1_url, "captcha.jpg", user_agent=current_ua)
+    
     sprite = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="instruction"]/div/img')))
     img2_url = sprite.get_attribute("src")
     logger.info("开始下载验证码图片(2): " + img2_url)
-    download_image(img2_url, "sprite.jpg")
+    download_image(img2_url, "sprite.jpg", user_agent=current_ua)
 
 
 def check_captcha(ocr) -> bool:
@@ -1090,6 +1362,67 @@ def wait_captcha_or_modal(driver, timeout):
     return "none"
 
 
+def save_cookies(driver, account_id):
+    """保存当前账号的 Cookie 到本地文件"""
+    import json
+    import hashlib
+    
+    if not account_id:
+        return
+        
+    os.makedirs("temp/cookies", exist_ok=True)
+    # 使用账号 Hash 作为文件名，避免特殊字符问题
+    account_hash = hashlib.md5(account_id.encode()).hexdigest()[:16]
+    cookie_path = os.path.join("temp", "cookies", f"{account_hash}.json")
+    
+    try:
+        cookies = driver.get_cookies()
+        with open(cookie_path, 'w', encoding='utf-8') as f:
+            json.dump(cookies, f, ensure_ascii=False)
+        logger.info(f"Cookie 已保存到本地")
+    except Exception as e:
+        logger.warning(f"保存 Cookie 失败: {e}")
+
+
+def load_cookies(driver, account_id):
+    """加载账号 Cookie 到浏览器，返回是否成功加载"""
+    import json
+    import hashlib
+    
+    if not account_id:
+        return False
+        
+    account_hash = hashlib.md5(account_id.encode()).hexdigest()[:16]
+    cookie_path = os.path.join("temp", "cookies", f"{account_hash}.json")
+    
+    if not os.path.exists(cookie_path):
+        logger.info("未找到本地 Cookie，将使用账号密码登录")
+        return False
+        
+    try:
+        with open(cookie_path, 'r', encoding='utf-8') as f:
+            cookies = json.load(f)
+            
+        # 必须先访问域名才能设置 Cookie
+        driver.get("https://app.rainyun.com/")
+        time.sleep(1)
+        
+        for cookie in cookies:
+            # 处理 expiry 字段（某些 Selenium 版本要求为整型）
+            if 'expiry' in cookie:
+                cookie['expiry'] = int(cookie['expiry'])
+            try:
+                driver.add_cookie(cookie)
+            except Exception:
+                pass  # 忽略单个 cookie 添加失败
+                
+        logger.info(f"已加载本地 Cookie")
+        return True
+    except Exception as e:
+        logger.warning(f"加载 Cookie 失败: {e}")
+        return False
+
+
 def run_checkin(account_user=None, account_pwd=None):
     """执行签到任务"""
     # 导入Selenium模块
@@ -1120,8 +1453,8 @@ def run_checkin(account_user=None, account_pwd=None):
             logger.info(f"随机延时等待 {delay} 分钟 {delay_sec} 秒")
             time.sleep(delay * 60 + delay_sec)
         
-        logger.info("初始化 Selenium")
-        driver = init_selenium()
+        logger.info("初始化 Selenium（账号专属配置）")
+        driver = init_selenium(current_user)
         
         # 过 Selenium 检测
         with open("stealth.min.js", mode="r") as f:
@@ -1130,89 +1463,120 @@ def run_checkin(account_user=None, account_pwd=None):
             "source": js
         })
         
-        logger.info("发起登录请求")
-        driver.get("https://app.rainyun.com/auth/login")
+        # 注入浏览器指纹随机化脚本（基于账号生成确定性指纹）
+        fingerprint_js = generate_fingerprint_script(current_user)
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": fingerprint_js
+        })
+        logger.info("已注入浏览器指纹脚本（账号专属指纹）")
+        
         wait = WebDriverWait(driver, timeout)
+        is_logged_in = False
         
-        try:
-            username = wait.until(EC.visibility_of_element_located((By.NAME, 'login-field')))
-            password = wait.until(EC.visibility_of_element_located((By.NAME, 'login-password')))
-            login_button = wait.until(EC.visibility_of_element_located((By.XPATH,
-                                                                        '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
-            username.send_keys(current_user)
-            password.send_keys(current_pwd)
-            login_button.click()
-        except TimeoutException:
-            logger.error("页面加载超时，请尝试延长超时时间或切换到国内网络环境！")
-            return {
-                'status': False,
-                'msg': '页面加载超时',
-                'points': 0,
-                'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
-                'retries': retry_stats['count']
-            }
+        # 尝试使用 Cookie 登录
+        cookie_loaded = load_cookies(driver, current_user)
+        if cookie_loaded:
+            logger.info("正在跳转积分页，尝试使用 Cookie 免密登录...")
+            driver.get("https://app.rainyun.com/account/reward/earn")
+            time.sleep(3)
+            
+            # 检查是否成功登录
+            if "/auth/login" not in driver.current_url:
+                logger.info("Cookie 有效，免密登录成功！🎉 已直接进入积分页")
+                is_logged_in = True
+            else:
+                logger.info("Cookie 已失效，将使用账号密码登录")
         
-        try:
-            login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
-            logger.warning("触发验证码！")
-            driver.switch_to.frame("tcaptcha_iframe_dy")
-            process_captcha(driver, timeout, retry_stats)
-        except TimeoutException:
-            logger.info("未触发验证码")
+        # 如果 Cookie 登录失败，使用账号密码登录
+        if not is_logged_in:
+            logger.info("发起账号密码登录请求")
+            driver.get("https://app.rainyun.com/auth/login")
+            
+            try:
+                username = wait.until(EC.visibility_of_element_located((By.NAME, 'login-field')))
+                password = wait.until(EC.visibility_of_element_located((By.NAME, 'login-password')))
+                login_button = wait.until(EC.visibility_of_element_located((By.XPATH,
+                                                                            '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
+                username.send_keys(current_user)
+                password.send_keys(current_pwd)
+                login_button.click()
+            except TimeoutException:
+                logger.error("页面加载超时，请尝试延长超时时间或切换到国内网络环境！")
+                return {
+                    'status': False,
+                    'msg': '页面加载超时',
+                    'points': 0,
+                    'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+                    'retries': retry_stats['count']
+                }
+            
+            try:
+                login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
+                logger.warning("触发验证码！")
+                driver.switch_to.frame("tcaptcha_iframe_dy")
+                process_captcha(driver, timeout, retry_stats)
+            except TimeoutException:
+                logger.info("未触发验证码")
+            
+            time.sleep(5)
+            driver.switch_to.default_content()
+            dismiss_modal_confirm(driver, timeout)
+            
+            if driver.current_url == "https://app.rainyun.com/dashboard":
+                logger.info("登录成功！")
+                # 登录成功后保存 Cookie
+                save_cookies(driver, current_user)
+            else:
+                logger.error(f"登录失败，当前页面: {driver.current_url}")
+                return {
+                    'status': False,
+                    'msg': '登录失败',
+                    'points': 0,
+                    'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+                    'retries': retry_stats['count']
+                }
         
-        time.sleep(5)
-        driver.switch_to.default_content()
-        dismiss_modal_confirm(driver, timeout)
-        
-        if driver.current_url == "https://app.rainyun.com/dashboard":
-            logger.info("登录成功！")
+        # 继续签到流程
+        # 如果是免密登录，已经在积分页了；如果是密码登录，需要跳转
+        if not is_logged_in or "/account/reward/earn" not in driver.current_url:
             logger.info("正在转到赚取积分页")
             driver.get("https://app.rainyun.com/account/reward/earn")
+        driver.implicitly_wait(5)
+        time.sleep(1)
+        dismiss_modal_confirm(driver, timeout)
+        dismiss_modal_confirm(driver, timeout)
+        
+        earn = driver.find_element(By.XPATH,
+                                   '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
+        logger.info("点击赚取积分")
+        earn.click()
+        state = wait_captcha_or_modal(driver, timeout)
+        if state == "captcha":
+            logger.info("处理验证码")
+            try:
+                captcha_iframe = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
+                driver.switch_to.frame(captcha_iframe)
+                process_captcha(driver, timeout, retry_stats)
+            finally:
+                driver.switch_to.default_content()
             driver.implicitly_wait(5)
-            time.sleep(1)
-            dismiss_modal_confirm(driver, timeout)
-            dismiss_modal_confirm(driver, timeout)
-            
-            earn = driver.find_element(By.XPATH,
-                                       '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
-            logger.info("点击赚取积分")
-            earn.click()
-            state = wait_captcha_or_modal(driver, timeout)
-            if state == "captcha":
-                logger.info("处理验证码")
-                try:
-                    captcha_iframe = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
-                    driver.switch_to.frame(captcha_iframe)
-                    process_captcha(driver, timeout, retry_stats)
-                finally:
-                    driver.switch_to.default_content()
-                driver.implicitly_wait(5)
-            else:
-                logger.info("未触发验证码（赚取积分）")
-            
-            points_raw = driver.find_element(By.XPATH,
-                                             '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3').get_attribute(
-                "textContent")
-            import re
-            current_points = int(''.join(re.findall(r'\d+', points_raw)))
-            logger.info(f"当前剩余积分: {current_points} | 约为 {current_points / 2000:.2f} 元")
-            logger.info("签到任务执行成功！")
-            return {
-                'status': True,
-                'msg': '签到成功',
-                'points': current_points,
-                'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
-                'retries': retry_stats['count']
-            }
         else:
-            logger.error("登录失败！")
-            return {
-                'status': False,
-                'msg': '登录失败',
-                'points': 0,
-                'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
-                'retries': retry_stats['count']
-            }
+            logger.info("未触发验证码（赚取积分）")
+        
+        points_raw = driver.find_element(By.XPATH,
+                                         '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3').get_attribute(
+            "textContent")
+        import re
+        current_points = int(''.join(re.findall(r'\d+', points_raw)))
+        logger.info(f"当前剩余积分: {current_points} | 约为 {current_points / 2000:.2f} 元")
+        logger.info("签到任务执行成功！")
+        return {
+            'status': True,
+            'msg': '签到成功',
+            'points': current_points,
+            'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+            'retries': retry_stats['count']
+        }
             
     except Exception as e:
         logger.error(f"签到任务执行失败: {e}")
@@ -1333,7 +1697,7 @@ if __name__ == "__main__":
 
     # 初始化日志（使用新的日志轮转功能）
     logger = setup_logging()
-    ver = "2.2-docker-notify"
+    ver = "2.2-docker-notify-plus"
     logger.info("------------------------------------------------------------------")
     logger.info(f"雨云签到工具 v{ver} by LeapYa ~")
     logger.info("Github发布页: https://github.com/LeapYa/Rainyun-Qiandao")
