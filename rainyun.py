@@ -696,6 +696,146 @@ def generate_fingerprint_script(account_id: str):
     return fingerprint_script
 
 
+def get_proxy_ip():
+    """
+    从代理接口获取代理IP
+    每个账号单独调用一次，获取独立的代理IP
+    """
+    import requests
+    import json
+    
+    proxy_api_url = os.getenv("PROXY_API_URL", "").strip()
+    
+    if not proxy_api_url:
+        return None
+    
+    try:
+        # 请求前随机延迟，防止并发打挂接口
+        delay = random.uniform(0.5, 2.0)
+        logger.debug(f"请求代理接口前延迟 {delay:.2f} 秒")
+        time.sleep(delay)
+        
+        logger.info(f"正在从代理接口获取IP...")
+        response = requests.get(proxy_api_url, timeout=10)
+        
+        if response.status_code != 200:
+            logger.error(f"代理接口请求失败，状态码: {response.status_code}")
+            return None
+        
+        proxy = parse_proxy_response(response.text)
+        
+        if not proxy:
+            logger.error(f"代理接口返回格式无法解析: {response.text[:100]}")
+            return None
+        
+        logger.info(f"获取到代理IP: {proxy}")
+        return proxy
+        
+    except requests.Timeout:
+        logger.error("代理接口请求超时")
+        return None
+    except Exception as e:
+        logger.error(f"获取代理IP失败: {e}")
+        return None
+
+
+def parse_proxy_response(response_text):
+    """
+    解析代理接口返回的内容，支持多种格式：
+    - 纯文本: ip:port
+    - JSON: {"ip": "x.x.x.x", "port": 8080}
+    - JSON: {"proxy": "ip:port"}
+    - JSON: {"code": 0, "data": {"proxy": "ip:port"}}
+    - JSON: {"code": 0, "data": {"ip": "x.x.x.x", "port": 8080}}
+    - 带协议: http://ip:port
+    """
+    import json
+    
+    response_text = response_text.strip()
+    
+    # 尝试 JSON 解析
+    try:
+        data = json.loads(response_text)
+        
+        # 处理嵌套的 data 字段
+        if "data" in data and isinstance(data["data"], dict):
+            data = data["data"]
+        
+        # 格式: {"proxy": "ip:port"}
+        if "proxy" in data:
+            proxy = str(data["proxy"]).strip()
+            if "://" in proxy:
+                proxy = proxy.split("://")[-1]
+            return proxy if ":" in proxy else None
+        
+        # 格式: {"ip": "x.x.x.x", "port": 8080}
+        if "ip" in data and "port" in data:
+            return f"{data['ip']}:{data['port']}"
+        
+    except (json.JSONDecodeError, TypeError, KeyError):
+        pass
+    
+    # 纯文本格式处理
+    proxy = response_text.strip()
+    
+    # 去除可能的协议前缀
+    if "://" in proxy:
+        proxy = proxy.split("://")[-1]
+    
+    # 验证是否为有效的 ip:port 格式
+    if ":" in proxy:
+        parts = proxy.split(":")
+        if len(parts) == 2:
+            ip_part, port_part = parts
+            # 简单验证IP和端口格式
+            if port_part.isdigit() and 1 <= int(port_part) <= 65535:
+                return proxy
+    
+    return None
+
+
+def validate_proxy(proxy, timeout=5):
+    """
+    测试代理是否可用
+    :param proxy: 代理地址，格式为 ip:port
+    :param timeout: 超时时间（秒）
+    :return: True 可用，False 不可用
+    """
+    import requests
+    
+    if not proxy:
+        return False
+    
+    try:
+        test_proxies = {
+            "http": f"http://{proxy}",
+            "https": f"http://{proxy}"
+        }
+        
+        # 使用 httpbin 测试代理连通性
+        logger.info(f"正在验证代理 {proxy} 的可用性...")
+        response = requests.get(
+            "http://httpbin.org/ip",
+            proxies=test_proxies,
+            timeout=timeout
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            logger.info(f"代理验证成功，出口IP: {result.get('origin', 'unknown')}")
+            return True
+        else:
+            logger.warning(f"代理验证失败，状态码: {response.status_code}")
+            return False
+            
+    except requests.Timeout:
+        logger.warning(f"代理 {proxy} 验证超时")
+        return False
+    except Exception as e:
+        logger.warning(f"代理 {proxy} 验证失败: {e}")
+        return False
+
+
 # SVG图标
 SVG_ICONS = {
     'success': '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#10B981" width="24" height="24"><path fill-rule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12zm13.36-1.814a.75.75 0 10-1.22-.872l-3.236 4.53L9.53 12.22a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.14-.094l3.75-5.25z" clip-rule="evenodd" /></svg>''',
@@ -1019,10 +1159,11 @@ def run_all_accounts():
     return success_count > 0
 
 
-def init_selenium(account_id: str):
+def init_selenium(account_id: str, proxy: str = None):
     """
     初始化 Selenium WebDriver
     :param account_id: 账号标识，用于生成该账号专属的 User-Agent
+    :param proxy: 代理地址，格式为 ip:port，为 None 则不使用代理
     """
     # 导入Selenium模块
     modules = import_selenium_modules()
@@ -1035,6 +1176,11 @@ def init_selenium(account_id: str):
     ops.add_argument("--disable-dev-shm-usage")  # Docker 环境优化
     ops.add_argument("--disable-extensions")
     ops.add_argument("--disable-plugins")
+    
+    # 配置代理
+    if proxy:
+        ops.add_argument(f"--proxy-server=http://{proxy}")
+        logger.info(f"浏览器已配置代理: {proxy}")
     
     # 添加账号专属 User-Agent（相同账号每次相同）
     user_agent = get_random_user_agent(account_id)
@@ -1453,8 +1599,23 @@ def run_checkin(account_user=None, account_pwd=None):
             logger.info(f"随机延时等待 {delay} 分钟 {delay_sec} 秒")
             time.sleep(delay * 60 + delay_sec)
         
+        # 获取代理IP（每个账号单独获取）
+        proxy = None
+        proxy_api_url = os.getenv("PROXY_API_URL", "").strip()
+        if proxy_api_url:
+            proxy = get_proxy_ip()
+            if proxy:
+                # 验证代理可用性
+                if validate_proxy(proxy):
+                    logger.info(f"代理 {proxy} 验证通过，将使用此代理")
+                else:
+                    logger.warning(f"代理 {proxy} 验证失败，将使用本地IP继续")
+                    proxy = None
+            else:
+                logger.warning("获取代理失败，将使用本地IP继续")
+        
         logger.info("初始化 Selenium（账号专属配置）")
-        driver = init_selenium(current_user)
+        driver = init_selenium(current_user, proxy=proxy)
         
         # 过 Selenium 检测
         with open("stealth.min.js", mode="r") as f:
