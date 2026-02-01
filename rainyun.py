@@ -696,18 +696,143 @@ def generate_fingerprint_script(account_id: str):
     return fingerprint_script
 
 
+# ==========================================
+# 广州代理抓取模块
+# ==========================================
+
+def download_geoip_db(db_path):
+    """下载 GeoIP 数据库"""
+    import requests
+    
+    if os.path.exists(db_path):
+        return True
+    
+    logger.info("正在下载 GeoIP 数据库...")
+    
+    urls = [
+        "https://git.io/GeoLite2-City.mmdb",
+        "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb",
+        "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/GeoLite2-City.mmdb",
+    ]
+    
+    for url in urls:
+        try:
+            logger.info(f"尝试下载: {url}")
+            response = requests.get(url, timeout=60, stream=True)
+            if response.status_code == 200:
+                with open(db_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                logger.info(f"GeoIP 数据库下载完成: {db_path}")
+                return True
+        except Exception as e:
+            logger.warning(f"下载失败: {e}")
+            continue
+    
+    logger.error("所有 GeoIP 下载源都失败了")
+    return False
+
+
+def fetch_guangzhou_proxy():
+    """
+    从免费代理源抓取一个可用的广州代理
+    找到即返回，无需配置 PROXY_API_URL
+    """
+    import requests
+    
+    # 检查依赖
+    try:
+        import geoip2.database
+        from freeproxy.modules import ProxyInfo
+        from freeproxy.modules.proxies import ProxiedSessionBuilder, BuildProxiedSession
+    except ImportError:
+        logger.warning("缺少 geoip2 或 freeproxy 依赖，无法抓取广州代理")
+        return None
+    
+    GEOIP_DB_PATH = "./GeoLite2-City.mmdb"
+    TARGET_CITIES = ["Guangzhou", "广州"]
+    MAX_PAGES = 2
+    VALIDATE_TIMEOUT = 10
+    
+    # 排除慢源
+    SLOW_SOURCES = {"TheSpeedXProxiedSession", "Tomcat1235ProxiedSession", "ProxylistProxiedSession"}
+    PROXY_SOURCES = [s for s in ProxiedSessionBuilder.REGISTERED_MODULES.keys() if s not in SLOW_SOURCES]
+    
+    # 自动下载 GeoIP 数据库
+    if not download_geoip_db(GEOIP_DB_PATH):
+        return None
+    
+    try:
+        geoip_reader = geoip2.database.Reader(GEOIP_DB_PATH)
+    except Exception as e:
+        logger.error(f"加载 GeoIP 数据库失败: {e}")
+        return None
+    
+    target_cities_lower = [c.lower() for c in TARGET_CITIES]
+    
+    def is_guangzhou(ip):
+        try:
+            response = geoip_reader.city(ip)
+            city_name = (response.city.name or "").lower()
+            city_name_cn = response.city.names.get("zh-CN", "") if response.city.names else ""
+            return city_name in target_cities_lower or city_name_cn in TARGET_CITIES
+        except:
+            return False
+    
+    def validate_one(proxy):
+        try:
+            proxies = {
+                "http": f"{proxy.protocol}://{proxy.ip}:{proxy.port}",
+                "https": f"{proxy.protocol}://{proxy.ip}:{proxy.port}",
+            }
+            response = requests.get("http://httpbin.org/ip", proxies=proxies, timeout=VALIDATE_TIMEOUT)
+            return response.status_code == 200
+        except:
+            return False
+    
+    logger.info("正在抓取广州代理...")
+    
+    found_proxy = None
+    
+    for source_name in PROXY_SOURCES:
+        if found_proxy:
+            break
+        try:
+            session = BuildProxiedSession({
+                "type": source_name,
+                "max_pages": MAX_PAGES,
+                "filter_rule": {"country_code": ["CN"]},
+                "disable_print": True,
+            })
+            proxies = session.refreshproxies()
+        except:
+            continue
+        
+        for proxy in proxies:
+            if is_guangzhou(proxy.ip):
+                if validate_one(proxy):
+                    found_proxy = f"{proxy.ip}:{proxy.port}"
+                    logger.info(f"找到可用广州代理: {found_proxy}")
+                    break
+    
+    geoip_reader.close()
+    return found_proxy
+
+
 def get_proxy_ip():
     """
     从代理接口获取代理IP
-    每个账号单独调用一次，获取独立的代理IP
+    优先使用 PROXY_API_URL，如果未配置则自动抓取广州代理
     """
     import requests
     import json
     
     proxy_api_url = os.getenv("PROXY_API_URL", "").strip()
     
+    # 如果没有配置代理API，尝试抓取广州代理
     if not proxy_api_url:
-        return None
+        logger.info("未配置 PROXY_API_URL，尝试抓取广州代理...")
+        return fetch_guangzhou_proxy()
     
     try:
         # 请求前随机延迟，防止并发打挂接口
@@ -1858,7 +1983,7 @@ if __name__ == "__main__":
 
     # 初始化日志（使用新的日志轮转功能）
     logger = setup_logging()
-    ver = "2.2-docker-notify-plus"
+    ver = "2.2-docker-notify-pp"
     logger.info("------------------------------------------------------------------")
     logger.info(f"雨云签到工具 v{ver} by LeapYa ~")
     logger.info("Github发布页: https://github.com/LeapYa/Rainyun-Qiandao")

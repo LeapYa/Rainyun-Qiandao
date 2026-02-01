@@ -3,3 +3,5 @@ requests~=2.32.4
 selenium~=4.15.0
 opencv-python-headless~=4.12.0.88
 schedule~=1.2.0
+geoip2~=4.8.0
+pyfreeproxy

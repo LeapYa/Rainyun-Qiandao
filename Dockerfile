@@ -59,6 +59,10 @@ RUN pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple &&
     pip3 config set global.trusted-host pypi.tuna.tsinghua.edu.cn && \
     pip3 install --no-cache-dir -r requirements.txt
 
+# 使用国内镜像安装 Playwright Chromium
+ENV PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
+RUN playwright install chromium && playwright install-deps chromium
+
 # 复制应用代码
 COPY . .
 
