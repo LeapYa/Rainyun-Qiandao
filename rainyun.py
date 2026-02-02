@@ -794,7 +794,7 @@ def parse_proxy_response(response_text):
     return None
 
 
-def validate_proxy(proxy, timeout=5):
+def validate_proxy(proxy, timeout=10):
     """
     测试代理是否可用
     :param proxy: 代理地址，格式为 ip:port
@@ -812,17 +812,16 @@ def validate_proxy(proxy, timeout=5):
             "https": f"http://{proxy}"
         }
         
-        # 使用 httpbin 测试代理连通性
+        # 使用雨云网站测试代理连通性（更贴近实际使用场景）
         logger.info(f"正在验证代理 {proxy} 的可用性...")
         response = requests.get(
-            "http://httpbin.org/ip",
+            "https://www.rainyun.com",
             proxies=test_proxies,
             timeout=timeout
         )
         
         if response.status_code == 200:
-            result = response.json()
-            logger.info(f"代理验证成功，出口IP: {result.get('origin', 'unknown')}")
+            logger.info(f"代理 {proxy} 验证成功")
             return True
         else:
             logger.warning(f"代理验证失败，状态码: {response.status_code}")
