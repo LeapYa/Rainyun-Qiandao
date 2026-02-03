@@ -19,7 +19,7 @@ RUN set -eux; \
         echo "deb ${mirror}/ ${codename}-backports ${comps}" >> /etc/apt/sources.list; \
         echo "deb ${security_mirror}/ ${codename}-security ${comps}" >> /etc/apt/sources.list; \
         apt-get update; \
-        apt-get install -y --no-install-recommends apt-transport-https ca-certificates; \
+        apt-get install -y --no-install-recommends apt-transport-https ca-certificates fonts-wqy-zenhei; \
         # 替换为 https 源
         mirror='https://mirrors.tuna.tsinghua.edu.cn/debian'; \
         security_mirror='https://mirrors.tuna.tsinghua.edu.cn/debian-security'; \
@@ -38,7 +38,7 @@ RUN set -eux; \
         echo "deb ${mirror}/ ${codename}-backports ${comps}" >> /etc/apt/sources.list; \
         echo "deb ${security_mirror}/ ${codename}-security ${comps}" >> /etc/apt/sources.list; \
         apt-get update; \
-        apt-get install -y --no-install-recommends ca-certificates; \
+        apt-get install -y --no-install-recommends ca-certificates fonts-wqy-zenhei; \
     else \
         echo "Debian version $version_id detected; skipping mirror replacement as sources are EOL or unavailable."; \
     fi; \
