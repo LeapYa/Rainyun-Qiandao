@@ -1,0 +1,71 @@
+name: 雨云每日签到
+
+on:
+  # 定时触发 - 每天北京时间 8:00 执行 (UTC 0:00)
+  schedule:
+    - cron: '0 0 * * *'
+  
+  # 手动触发（方便测试）
+  workflow_dispatch:
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. 检出代码
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # 2. 设置 Python 环境
+      - name: 设置 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # 3. 安装 Chrome 浏览器
+      - name: 安装 Chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
+      # 4. 安装 Python 依赖
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 5. 执行签到
+      - name: 执行签到
+        env:
+          # 从 GitHub Secrets 读取账号密码
+          RAINYUN_USERNAME: ${{ secrets.RAINYUN_USERNAME }}
+          RAINYUN_PASSWORD: ${{ secrets.RAINYUN_PASSWORD }}
+          # 可选：通知配置
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+          WXPUSHER_UIDS: ${{ secrets.WXPUSHER_UIDS }}
+          DINGTALK_ACCESS_TOKEN: ${{ secrets.DINGTALK_ACCESS_TOKEN }}
+          DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_TO: ${{ secrets.SMTP_TO }}
+          # 运行配置
+          DEBUG: 'false'
+          MAX_DELAY: '1'
+          TIMEOUT: '60000'
+          CHECKIN_MAX_RETRIES: '3'
+        run: |
+          python rainyun.py
+
+      # 6. 上传日志（可选，方便排查问题）
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkin-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 7
