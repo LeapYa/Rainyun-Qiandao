@@ -844,6 +844,38 @@ SVG_ICONS = {
 }
 
 
+def get_screenshot_html(screenshot_path):
+    """
+    将截图文件转换为 Base64 嵌入的 HTML img 标签
+    :param screenshot_path: 截图文件路径
+    :return: HTML img 标签或空字符串
+    """
+    if not screenshot_path or not os.path.exists(screenshot_path):
+        return ""
+    
+    try:
+        import base64
+        with open(screenshot_path, "rb") as img_file:
+            img_data = base64.b64encode(img_file.read()).decode('utf-8')
+        
+        # 根据文件扩展名确定 MIME 类型
+        mime_type = "image/jpeg" if screenshot_path.lower().endswith(('.jpg', '.jpeg')) else "image/png"
+        
+        # 获取文件大小
+        file_size = os.path.getsize(screenshot_path) / 1024  # KB
+        
+        return f'''
+            <div style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px;">
+                <div style="font-size: 12px; color: var(--text-sub); margin-bottom: 8px;">📸 截图 ({file_size:.1f}KB)</div>
+                <img src="data:{mime_type};base64,{img_data}" style="max-width: 100%; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" alt="签到截图"/>
+            </div>
+        '''
+    except Exception as e:
+        logger.debug(f"生成截图 HTML 时出错: {e}")
+        return ""
+
+
+
 def generate_html_report(results):
     """生成 HTML 签到报告"""
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -966,6 +998,7 @@ def generate_html_report(results):
                     <span>重试: {res.get('retries', 0)}</span>
                 </div>
             </div>
+            {get_screenshot_html(res.get('screenshot'))}
         </div>
         """
         
@@ -1033,6 +1066,162 @@ def send_pushplus_notification(token, title, content):
         return False
 
 
+def save_screenshot(driver, account_id, status="success", error_msg=""):
+    """
+    保存签到截图（带压缩）
+    :param driver: WebDriver 实例
+    :param account_id: 账号标识
+    :param status: 截图类型 "success" 或 "failure"
+    :param error_msg: 错误信息（仅失败时使用）
+    :return: 截图路径或 None
+    """
+    try:
+        # 创建截图目录（使用 temp 目录）
+        screenshot_dir = os.path.join("temp", "screenshots")
+        os.makedirs(screenshot_dir, exist_ok=True)
+        
+        # 生成截图文件名（类型_账号_时间戳）
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        masked_account = f"{account_id[:3]}xxx{account_id[-3:] if len(account_id) > 6 else account_id}"
+        
+        # 先保存原始 PNG 截图
+        temp_filepath = os.path.join(screenshot_dir, f"temp_{timestamp}.png")
+        driver.save_screenshot(temp_filepath)
+        
+        # 压缩并转换为 JPEG 格式（大幅减小文件大小）
+        compressed_filename = f"{status}_{masked_account}_{timestamp}.jpg"
+        compressed_filepath = os.path.join(screenshot_dir, compressed_filename)
+        
+        original_size = os.path.getsize(temp_filepath)
+        compressed_size = compress_screenshot(temp_filepath, compressed_filepath)
+        
+        # 删除临时 PNG 文件
+        try:
+            os.remove(temp_filepath)
+        except:
+            pass
+        
+        if compressed_size:
+            compression_ratio = (1 - compressed_size / original_size) * 100
+            status_text = "成功" if status == "success" else "失败"
+            logger.info(f"已保存{status_text}截图: {compressed_filepath} (压缩率: {compression_ratio:.1f}%, {original_size/1024:.1f}KB -> {compressed_size/1024:.1f}KB)")
+            
+            # 清理7天前的旧截图
+            cleanup_old_screenshots(screenshot_dir, days=7)
+            
+            return compressed_filepath
+        else:
+            # 压缩失败，使用原始文件
+            logger.warning("截图压缩失败，使用原始文件")
+            return temp_filepath
+            
+    except Exception as e:
+        logger.error(f"保存截图时出错: {e}")
+        return None
+
+
+def compress_screenshot(input_path, output_path, max_width=1280, quality=75):
+    """先本地 Pillow 压缩，如果配置了 TinyPNG 则二次压缩"""
+    result = compress_with_pillow(input_path, output_path, max_width, quality)
+    if not result:
+        return None
+    
+    tinypng_key = os.getenv("TINYPNG_API_KEY", "").strip()
+    if tinypng_key:
+        tinypng_result = compress_with_tinypng(output_path, output_path, tinypng_key)
+        return tinypng_result or result
+    
+    return result
+
+
+def compress_with_tinypng(input_path, output_path, api_key):
+    """使用 TinyPNG API 压缩（每月免费 500 次，单张最大 5MB）"""
+    import requests
+    import base64
+    
+    try:
+        if os.path.getsize(input_path) > 5 * 1024 * 1024:
+            logger.warning("图片超过 TinyPNG 5MB 限制")
+            return None
+        
+        with open(input_path, "rb") as f:
+            image_data = f.read()
+        
+        auth = base64.b64encode(f"api:{api_key}".encode()).decode()
+        resp = requests.post(
+            "https://api.tinify.com/shrink",
+            headers={"Authorization": f"Basic {auth}"},
+            data=image_data,
+            timeout=30
+        )
+        
+        if resp.status_code != 201:
+            error_map = {401: "API Key 无效", 429: "本月额度已用完"}
+            logger.warning(f"TinyPNG: {error_map.get(resp.status_code, resp.status_code)}")
+            return None
+        
+        compressed_url = resp.json().get("output", {}).get("url")
+        if not compressed_url:
+            return None
+        
+        img_resp = requests.get(compressed_url, timeout=30)
+        if img_resp.status_code != 200:
+            return None
+        
+        with open(output_path, "wb") as f:
+            f.write(img_resp.content)
+        
+        used = resp.headers.get("Compression-Count", "?")
+        logger.info(f"TinyPNG 压缩成功 (已用: {used}/500)")
+        return os.path.getsize(output_path)
+        
+    except Exception as e:
+        logger.debug(f"TinyPNG 出错: {e}")
+        return None
+
+
+def compress_with_pillow(input_path, output_path, max_width=1280, quality=75):
+    """使用 Pillow 本地压缩"""
+    try:
+        from PIL import Image
+        
+        with Image.open(input_path) as img:
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+            
+            w, h = img.size
+            if w > max_width:
+                img = img.resize((max_width, int(h * max_width / w)), Image.Resampling.LANCZOS)
+            
+            img.save(output_path, 'JPEG', quality=quality, optimize=True)
+        
+        return os.path.getsize(output_path)
+    except Exception as e:
+        logger.debug(f"Pillow 压缩出错: {e}")
+        return None
+
+def cleanup_old_screenshots(screenshot_dir, days=7):
+    """清理超过指定天数的截图文件"""
+    try:
+        now = time.time()
+        cutoff = now - (days * 86400)  # 86400秒 = 1天
+        
+        for filename in os.listdir(screenshot_dir):
+            file_path = os.path.join(screenshot_dir, filename)
+            # 支持 PNG 和 JPEG 格式
+            if os.path.isfile(file_path) and (filename.endswith('.png') or filename.endswith('.jpg')):
+                # 匹配 success_ 或 failure_ 开头的截图
+                if filename.startswith('success_') or filename.startswith('failure_'):
+                    file_time = os.path.getmtime(file_path)
+                    if file_time < cutoff:
+                        os.remove(file_path)
+                        logger.debug(f"已删除过期截图: {filename}")
+
+    except Exception as e:
+        logger.debug(f"清理旧截图时出错: {e}")
+
+
+
 def parse_accounts():
     """解析多账号配置"""
     usernames = os.getenv("RAINYUN_USERNAME", "").split("|")
@@ -1068,29 +1257,82 @@ def run_all_accounts():
     logger.info("检查并清理可能的僵尸进程...")
     cleanup_zombie_processes()
     
-    accounts = parse_accounts()
-    success_count = 0
-    results = []
+    # 从环境变量获取最大重试次数，默认为2
+    max_retries = int(os.getenv("CHECKIN_MAX_RETRIES", "2"))
     
-    for i, (username, password) in enumerate(accounts, 1):
-        logger.info(f"========== 开始执行第 {i}/{len(accounts)} 个账号签到 ==========")
-        result = run_checkin(username, password)
-        results.append(result)
-        
-        if result['status']:
-            success_count += 1
-            logger.info(f"✅ 账号 {i} 签到成功")
+    accounts = parse_accounts()
+    results = {}
+    
+    # 初始化每个账号的结果
+    for i, (username, password) in enumerate(accounts):
+        results[username] = {
+            'password': password,
+            'result': None,
+            'retry_count': 0,
+            'index': i + 1
+        }
+    
+    # 待执行的账号列表
+    pending_accounts = list(accounts)
+    current_attempt = 0
+    
+    while pending_accounts and current_attempt <= max_retries:
+        if current_attempt == 0:
+            logger.info(f"========== 开始执行签到任务（共 {len(pending_accounts)} 个账号） ==========")
         else:
-            logger.error(f"❌ 账号 {i} 签到失败")
+            logger.info(f"========== 第 {current_attempt} 次重试（共 {len(pending_accounts)} 个失败账号） ==========")
         
-        # 每个账号执行后清理一次
-        cleanup_zombie_processes()
+        failed_accounts = []
         
-        # 账号间延时（避免频繁操作）
-        if i < len(accounts):  # 不是最后一个账号
-            delay = random.randint(30, 120)  # 30-120秒随机延时
-            logger.info(f"账号间延时等待 {delay} 秒...")
-            time.sleep(delay)
+        for i, (username, password) in enumerate(pending_accounts, 1):
+            account_idx = results[username]['index']
+            retry_info = f"（第 {results[username]['retry_count'] + 1} 次尝试）" if results[username]['retry_count'] > 0 else ""
+            logger.info(f"========== 执行账号 {account_idx}/{len(accounts)} {retry_info} ==========")
+            
+            result = run_checkin(username, password)
+            results[username]['result'] = result
+            
+            if result['status']:
+                logger.info(f"✅ 账号 {account_idx} 签到成功")
+            else:
+                logger.error(f"❌ 账号 {account_idx} 签到失败: {result['msg']}")
+                results[username]['retry_count'] += 1
+                # 还没达到最大重试次数，加入待重试列表
+                if results[username]['retry_count'] <= max_retries:
+                    failed_accounts.append((username, password))
+            
+            # 每个账号执行后清理一次
+            cleanup_zombie_processes()
+            
+            # 账号间延时（避免频繁操作）
+            if i < len(pending_accounts):
+                delay = random.randint(30, 120)  # 30-120秒随机延时
+                logger.info(f"账号间延时等待 {delay} 秒...")
+                time.sleep(delay)
+        
+        # 更新待执行列表为失败账号
+        pending_accounts = failed_accounts
+        current_attempt += 1
+        
+        # 如果还有待重试的账号，增加重试间隔
+        if pending_accounts:
+            retry_delay = random.randint(60, 180)  # 重试前等待 1-3 分钟
+            logger.info(f"等待 {retry_delay} 秒后开始重试...")
+            time.sleep(retry_delay)
+    
+    # 汇总最终结果
+    final_results = [results[username]['result'] for username, _ in accounts]
+    success_count = len([r for r in final_results if r and r['status']])
+    
+    # 统计重试信息
+    retry_accounts = [(username, results[username]['retry_count']) for username, _ in accounts if results[username]['retry_count'] > 0]
+    if retry_accounts:
+        logger.info(f"重试统计: {len(retry_accounts)} 个账号进行了重试")
+        for username, count in retry_accounts:
+            masked_user = f"{username[:3]}***{username[-3:] if len(username) > 6 else username}"
+            final_status = "成功" if results[username]['result'] and results[username]['result']['status'] else "失败"
+            logger.info(f"  - {masked_user}: 重试 {count} 次, 最终{final_status}")
+
     
     # 统计结果并发送通知
     if accounts:
@@ -1139,15 +1381,14 @@ def run_all_accounts():
         # 发送通知
         if notification_manager.providers:
             logger.info("正在生成详细推送报告...")
-            html_content = generate_html_report(results)
-            markdown_content = generate_markdown_report(results)
+            html_content = generate_html_report(final_results)
+            markdown_content = generate_markdown_report(final_results)
             
             context = {
                 'html': html_content,
                 'markdown': markdown_content
             }
             
-            success_count = len([r for r in results if r['status']])
             title = f"雨云签到: {success_count}/{len(accounts)} 成功"
             notification_manager.send_all(title, context)
     
@@ -1199,15 +1440,27 @@ def init_selenium(account_id: str, proxy: str = None):
     if debug:
         ops.add_experimental_option("detach", True)
     
+    # 设置窗口大小（避免因窗口太小导致元素重叠或误点击）
+    ops.add_argument("--window-size=1920,1080")
+    
     if linux:
         ops.add_argument("--headless")
         ops.add_argument("--disable-gpu")
-        
-        # Selenium 官方镜像的 ChromeDriver 路径
+
+        # 检测 ChromeDriver 路径
+        # Docker (Selenium镜像) 使用固定路径
+        # GitHub Actions 等环境使用 Selenium Manager 自动管理
         chromedriver_path = "/usr/bin/chromedriver"
         
-        logger.info(f"使用 Selenium 镜像的 ChromeDriver: {chromedriver_path}")
-        service = Service(chromedriver_path)
+        if os.path.exists(chromedriver_path):
+            # Docker 环境：使用固定路径
+            logger.info(f"使用 Docker 镜像的 ChromeDriver: {chromedriver_path}")
+            service = Service(chromedriver_path)
+        else:
+            # GitHub Actions 等环境：使用 Selenium Manager 自动管理
+            logger.info("使用 Selenium Manager 自动管理 ChromeDriver")
+            service = Service()
+        
         return webdriver.Chrome(service=service, options=ops)
     else:
         # Windows 环境
@@ -1631,45 +1884,35 @@ def run_checkin(account_user=None, account_pwd=None):
         logger.info("已注入浏览器指纹脚本（账号专属指纹）")
         
         wait = WebDriverWait(driver, timeout)
-        is_logged_in = False
         
-        # 尝试使用 Cookie 登录
-        cookie_loaded = load_cookies(driver, current_user)
-        if cookie_loaded:
-            logger.info("正在跳转积分页，尝试使用 Cookie 免密登录...")
-            driver.get("https://app.rainyun.com/account/reward/earn")
-            time.sleep(3)
-            
-            # 检查是否成功登录
-            if "/auth/login" not in driver.current_url:
-                logger.info("Cookie 有效，免密登录成功！🎉 已直接进入积分页")
-                is_logged_in = True
-            else:
-                logger.info("Cookie 已失效，将使用账号密码登录")
+        # 加载 Cookie 并直接跳转积分页
+        load_cookies(driver, current_user)
+        logger.info("正在跳转积分页...")
+        driver.get("https://app.rainyun.com/account/reward/earn")
+        time.sleep(3)
         
-        # 如果 Cookie 登录失败，使用账号密码登录
-        if not is_logged_in:
-            logger.info("发起账号密码登录请求")
-            driver.get("https://app.rainyun.com/auth/login")
+        # 检查是否需要密码登录
+        if "/auth/login" in driver.current_url:
+            logger.info("Cookie 已失效，使用账号密码登录")
             
             try:
                 username = wait.until(EC.visibility_of_element_located((By.NAME, 'login-field')))
                 password = wait.until(EC.visibility_of_element_located((By.NAME, 'login-password')))
                 login_button = wait.until(EC.visibility_of_element_located((By.XPATH,
-                                                                            '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
+                    '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
                 username.send_keys(current_user)
                 password.send_keys(current_pwd)
                 login_button.click()
             except TimeoutException:
-                logger.error("页面加载超时，请尝试延长超时时间或切换到国内网络环境！")
+                logger.error("页面加载超时")
+                screenshot_path = save_screenshot(driver, current_user, status="failure")
                 return {
-                    'status': False,
-                    'msg': '页面加载超时',
-                    'points': 0,
+                    'status': False, 'msg': '页面加载超时', 'points': 0,
                     'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
-                    'retries': retry_stats['count']
+                    'retries': retry_stats['count'], 'screenshot': screenshot_path
                 }
             
+            # 处理登录验证码
             try:
                 login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
                 logger.warning("触发验证码！")
@@ -1682,25 +1925,28 @@ def run_checkin(account_user=None, account_pwd=None):
             driver.switch_to.default_content()
             dismiss_modal_confirm(driver, timeout)
             
-            if driver.current_url == "https://app.rainyun.com/dashboard":
+            # 验证登录结果
+            if "/dashboard" in driver.current_url or "/account" in driver.current_url:
                 logger.info("登录成功！")
-                # 登录成功后保存 Cookie
                 save_cookies(driver, current_user)
+                # 跳转到积分页
+                driver.get("https://app.rainyun.com/account/reward/earn")
+                time.sleep(2)
             else:
                 logger.error(f"登录失败，当前页面: {driver.current_url}")
+                screenshot_path = save_screenshot(driver, current_user, status="failure")
                 return {
-                    'status': False,
-                    'msg': '登录失败',
-                    'points': 0,
+                    'status': False, 'msg': '登录失败', 'points': 0,
                     'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
-                    'retries': retry_stats['count']
+                    'retries': retry_stats['count'], 'screenshot': screenshot_path
                 }
+        else:
+            logger.info("Cookie 有效，免密登录成功！🎉")
         
-        # 继续签到流程
-        # 如果是免密登录，已经在积分页了；如果是密码登录，需要跳转
-        if not is_logged_in or "/account/reward/earn" not in driver.current_url:
-            logger.info("正在转到赚取积分页")
+        # 确保在积分页
+        if "/account/reward/earn" not in driver.current_url:
             driver.get("https://app.rainyun.com/account/reward/earn")
+
         driver.implicitly_wait(5)
         time.sleep(1)
         dismiss_modal_confirm(driver, timeout)
@@ -1708,20 +1954,28 @@ def run_checkin(account_user=None, account_pwd=None):
         
         earn = driver.find_element(By.XPATH,
                                    '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
-        logger.info("点击赚取积分")
-        earn.click()
-        state = wait_captcha_or_modal(driver, timeout)
-        if state == "captcha":
-            logger.info("处理验证码")
-            try:
-                captcha_iframe = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
-                driver.switch_to.frame(captcha_iframe)
-                process_captcha(driver, timeout, retry_stats)
-            finally:
-                driver.switch_to.default_content()
-            driver.implicitly_wait(5)
+        btn_text = earn.text.strip()
+        logger.info(f"签到按钮文字: [{btn_text}]")
+        
+        # 只有"领取奖励"才需要点击，其他情况视为已完成
+        if btn_text == "领取奖励":
+            logger.info("点击领取奖励")
+            earn.click()
+            state = wait_captcha_or_modal(driver, timeout)
+            if state == "captcha":
+                logger.info("处理验证码")
+                try:
+                    captcha_iframe = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
+                    driver.switch_to.frame(captcha_iframe)
+                    process_captcha(driver, timeout, retry_stats)
+                finally:
+                    driver.switch_to.default_content()
+                driver.implicitly_wait(5)
+            else:
+                logger.info("未触发验证码")
         else:
-            logger.info("未触发验证码（赚取积分）")
+            logger.info(f"今日已签到（按钮显示: {btn_text}）")
+
         
         points_raw = driver.find_element(By.XPATH,
                                          '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3').get_attribute(
@@ -1730,24 +1984,32 @@ def run_checkin(account_user=None, account_pwd=None):
         current_points = int(''.join(re.findall(r'\d+', points_raw)))
         logger.info(f"当前剩余积分: {current_points} | 约为 {current_points / 2000:.2f} 元")
         logger.info("签到任务执行成功！")
+        # 保存成功截图
+        screenshot_path = save_screenshot(driver, current_user, status="success")
         return {
             'status': True,
             'msg': '签到成功',
             'points': current_points,
             'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
-            'retries': retry_stats['count']
+            'retries': retry_stats['count'],
+            'screenshot': screenshot_path
         }
             
     except Exception as e:
         logger.error(f"签到任务执行失败: {e}")
         import traceback
         logger.error(f"详细错误信息: {traceback.format_exc()}")
+        # 保存失败截图
+        screenshot_path = None
+        if driver is not None:
+            screenshot_path = save_screenshot(driver, current_user, status="failure")
         return {
             'status': False,
             'msg': f'执行异常: {str(e)[:50]}...',
             'points': 0,
             'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
-            'retries': retry_stats['count']
+            'retries': retry_stats['count'],
+            'screenshot': screenshot_path
         }
     finally:
         # 确保在任何情况下都关闭 WebDriver
