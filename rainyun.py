@@ -1292,10 +1292,13 @@ def run_all_accounts():
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 提交任务
             for i, (username, password) in enumerate(pending_accounts):
-                # 错开启动时间
                 if i > 0 and stagger_delay > 0:
-                     logger.info(f"等待 {stagger_delay} 秒后启动下一个账号任务...")
-                     time.sleep(stagger_delay)
+                     # 确保最小延时为 5秒 或 用户设置的上限（取较小值）
+                     # 这样既能避免 0秒/1秒 这种极短间隔，又遵循用户配置的 max
+                     safe_min = min(5, stagger_delay)
+                     actual_delay = random.randint(safe_min, stagger_delay)
+                     logger.info(f"随机等待 {actual_delay} 秒后启动下一个账号任务...")
+                     time.sleep(actual_delay)
                 
                 account_idx = results[username]['index']
                 retry_info = f"（第 {results[username]['retry_count'] + 1} 次尝试）" if results[username]['retry_count'] > 0 else ""
@@ -2168,7 +2171,7 @@ if __name__ == "__main__":
 
     # 初始化日志（使用新的日志轮转功能）
     logger = setup_logging()
-    ver = "2.2-docker-notify-plus"
+    ver = "2.2-docker-notify-pp"
     logger.info("------------------------------------------------------------------")
     logger.info(f"雨云签到工具 v{ver} by LeapYa ~")
     logger.info("Github发布页: https://github.com/LeapYa/Rainyun-Qiandao")
