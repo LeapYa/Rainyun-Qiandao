@@ -1881,9 +1881,19 @@ def run_checkin(account_user=None, account_pwd=None):
     current_pwd = account_pwd or pwd
     driver = None  # 初始化为 None，确保在任何情况下都能安全清理
     retry_stats = {'count': 0}
+
+    # 创建带前缀的 Log Adapter
+    masked_user = f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}"
+    
+    class PrefixAdapter(logging.LoggerAdapter):
+        def process(self, msg, kwargs):
+            return '[%s] %s' % (self.extra['prefix'], msg), kwargs
+
+    # 使用 Adapter 替换原有的 logger
+    logger_adapter = PrefixAdapter(logger, {'prefix': masked_user})
     
     try:
-        logger.info(f"开始执行签到任务... 账号: {current_user[:5]}***{current_user[-5:] if len(current_user) > 10 else current_user}")
+        logger_adapter.info(f"开始执行签到任务...")
         
         # 获取代理IP（每个账号单独获取）
         proxy = None
@@ -1893,14 +1903,14 @@ def run_checkin(account_user=None, account_pwd=None):
             if proxy:
                 # 验证代理可用性
                 if validate_proxy(proxy):
-                    logger.info(f"代理 {proxy} 验证通过，将使用此代理")
+                    logger_adapter.info(f"代理 {proxy} 验证通过，将使用此代理")
                 else:
-                    logger.warning(f"代理 {proxy} 验证失败，将使用本地IP继续")
+                    logger_adapter.warning(f"代理 {proxy} 验证失败，将使用本地IP继续")
                     proxy = None
             else:
-                logger.warning("获取代理失败，将使用本地IP继续")
+                logger_adapter.warning("获取代理失败，将使用本地IP继续")
         
-        logger.info("初始化 Selenium（账号专属配置）")
+        logger_adapter.info("初始化 Selenium（账号专属配置）")
         driver = init_selenium(current_user, proxy=proxy)
         
         # 过 Selenium 检测
@@ -1915,19 +1925,19 @@ def run_checkin(account_user=None, account_pwd=None):
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": fingerprint_js
         })
-        logger.info("已注入浏览器指纹脚本（账号专属指纹）")
+        logger_adapter.info("已注入浏览器指纹脚本（账号专属指纹）")
         
         wait = WebDriverWait(driver, timeout)
         
         # 加载 Cookie 并直接跳转积分页
         load_cookies(driver, current_user)
-        logger.info("正在跳转积分页...")
+        logger_adapter.info("正在跳转积分页...")
         driver.get("https://app.rainyun.com/account/reward/earn")
         time.sleep(3)
         
         # 检查是否需要密码登录
         if "/auth/login" in driver.current_url:
-            logger.info("Cookie 已失效，使用账号密码登录")
+            logger_adapter.info("Cookie 已失效，使用账号密码登录")
             
             try:
                 username = wait.until(EC.visibility_of_element_located((By.NAME, 'login-field')))
@@ -1938,7 +1948,7 @@ def run_checkin(account_user=None, account_pwd=None):
                 password.send_keys(current_pwd)
                 login_button.click()
             except TimeoutException:
-                logger.error("页面加载超时")
+                logger_adapter.error("页面加载超时")
                 screenshot_path = save_screenshot(driver, current_user, status="failure")
                 return {
                     'status': False, 'msg': '页面加载超时', 'points': 0,
@@ -1949,11 +1959,11 @@ def run_checkin(account_user=None, account_pwd=None):
             # 处理登录验证码
             try:
                 login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
-                logger.warning("触发验证码！")
+                logger_adapter.warning("触发验证码！")
                 driver.switch_to.frame("tcaptcha_iframe_dy")
                 process_captcha(driver, timeout, retry_stats)
             except TimeoutException:
-                logger.info("未触发验证码")
+                logger_adapter.info("未触发验证码")
             
             time.sleep(5)
             driver.switch_to.default_content()
@@ -1961,13 +1971,13 @@ def run_checkin(account_user=None, account_pwd=None):
             
             # 验证登录结果
             if "/dashboard" in driver.current_url or "/account" in driver.current_url:
-                logger.info("登录成功！")
+                logger_adapter.info("登录成功！")
                 save_cookies(driver, current_user)
                 # 跳转到积分页
                 driver.get("https://app.rainyun.com/account/reward/earn")
                 time.sleep(2)
             else:
-                logger.error(f"登录失败，当前页面: {driver.current_url}")
+                logger_adapter.error(f"登录失败，当前页面: {driver.current_url}")
                 screenshot_path = save_screenshot(driver, current_user, status="failure")
                 return {
                     'status': False, 'msg': '登录失败', 'points': 0,
@@ -1975,7 +1985,7 @@ def run_checkin(account_user=None, account_pwd=None):
                     'retries': retry_stats['count'], 'screenshot': screenshot_path
                 }
         else:
-            logger.info("Cookie 有效，免密登录成功！🎉")
+            logger_adapter.info("Cookie 有效，免密登录成功！🎉")
         
         # 确保在积分页
         if "/account/reward/earn" not in driver.current_url:
@@ -1989,15 +1999,15 @@ def run_checkin(account_user=None, account_pwd=None):
         earn = driver.find_element(By.XPATH,
                                    '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
         btn_text = earn.text.strip()
-        logger.info(f"签到按钮文字: [{btn_text}]")
+        logger_adapter.info(f"签到按钮文字: [{btn_text}]")
         
         # 只有"领取奖励"才需要点击，其他情况视为已完成
         if btn_text == "领取奖励":
-            logger.info("点击领取奖励")
+            logger_adapter.info("点击领取奖励")
             earn.click()
             state = wait_captcha_or_modal(driver, timeout)
             if state == "captcha":
-                logger.info("处理验证码")
+                logger_adapter.info("处理验证码")
                 try:
                     captcha_iframe = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
                     driver.switch_to.frame(captcha_iframe)
@@ -2006,9 +2016,9 @@ def run_checkin(account_user=None, account_pwd=None):
                     driver.switch_to.default_content()
                 driver.implicitly_wait(5)
             else:
-                logger.info("未触发验证码")
+                logger_adapter.info("未触发验证码")
         else:
-            logger.info(f"今日已签到（按钮显示: {btn_text}）")
+            logger_adapter.info(f"今日已签到（按钮显示: {btn_text}）")
 
         
         points_raw = driver.find_element(By.XPATH,
@@ -2016,8 +2026,8 @@ def run_checkin(account_user=None, account_pwd=None):
             "textContent")
         import re
         current_points = int(''.join(re.findall(r'\d+', points_raw)))
-        logger.info(f"当前剩余积分: {current_points} | 约为 {current_points / 2000:.2f} 元")
-        logger.info("签到任务执行成功！")
+        logger_adapter.info(f"当前剩余积分: {current_points} | 约为 {current_points / 2000:.2f} 元")
+        logger_adapter.info("签到任务执行成功！")
         # 保存成功截图
         screenshot_path = save_screenshot(driver, current_user, status="success")
         return {
@@ -2030,9 +2040,9 @@ def run_checkin(account_user=None, account_pwd=None):
         }
             
     except Exception as e:
-        logger.error(f"签到任务执行失败: {e}")
+        logger_adapter.error(f"签到任务执行失败: {e}")
         import traceback
-        logger.error(f"详细错误信息: {traceback.format_exc()}")
+        logger_adapter.error(f"详细错误信息: {traceback.format_exc()}")
         # 保存失败截图
         screenshot_path = None
         if driver is not None:
@@ -2049,14 +2059,14 @@ def run_checkin(account_user=None, account_pwd=None):
         # 确保在任何情况下都关闭 WebDriver
         if driver is not None:
             try:
-                logger.info("正在关闭 WebDriver...")
+                logger_adapter.info("正在关闭 WebDriver...")
                 
                 # 首先尝试正常关闭
                 try:
                     driver.quit()
-                    logger.info("WebDriver 已安全关闭")
+                    logger_adapter.info("WebDriver 已安全关闭")
                 except Exception as e:
-                    logger.error(f"关闭 WebDriver 时出错: {e}")
+                    logger_adapter.error(f"关闭 WebDriver 时出错: {e}")
                 
                 # 等待一小段时间让进程完全退出
                 time.sleep(1)
@@ -2075,7 +2085,7 @@ def run_checkin(account_user=None, account_pwd=None):
                                 # 如果还没退出，强制kill
                                 process.kill()
                                 process.wait()
-                            logger.info("已终止 ChromeDriver 进程")
+                            logger_adapter.info("已终止 ChromeDriver 进程")
                 except Exception as e:
                     logger.debug(f"清理 ChromeDriver 进程时出错: {e}")
                 
@@ -2088,7 +2098,7 @@ def run_checkin(account_user=None, account_pwd=None):
                         pass
                         
             except Exception as e:
-                logger.error(f"WebDriver 清理过程出现异常: {e}")
+                logger_adapter.error(f"WebDriver 清理过程出现异常: {e}")
         
         # 卸载Selenium模块，释放内存
         try:
