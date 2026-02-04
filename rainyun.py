@@ -837,11 +837,11 @@ def validate_proxy(proxy, timeout=10):
 
 
 # SVG图标
-SVG_ICONS = {
-    'success': '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#10B981" width="24" height="24"><path fill-rule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12zm13.36-1.814a.75.75 0 10-1.22-.872l-3.236 4.53L9.53 12.22a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.14-.094l3.75-5.25z" clip-rule="evenodd" /></svg>''',
-    'error': '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#EF4444" width="24" height="24"><path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zm-1.72 6.97a.75.75 0 10-1.06 1.06L10.94 12l-1.72 1.72a.75.75 0 101.06 1.06L12 13.06l1.72 1.72a.75.75 0 101.06-1.06L13.06 12l1.72-1.72a.75.75 0 10-1.06-1.06L12 10.94l-1.72-1.72z" clip-rule="evenodd" /></svg>''',
-    'user': '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#6B7280" width="20" height="20"><path fill-rule="evenodd" d="M7.5 6a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0zM3.751 20.105a8.25 8.25 0 0116.498 0 .75.75 0 01-.437.695A18.683 18.683 0 0112 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 01-.437-.695z" clip-rule="evenodd" /></svg>''',
-    'coin': '''<svg class="icon" viewBox="0 0 1114 1024" xmlns="http://www.w3.org/2000/svg" width="200" height="200"><path d="M807.511 400.666a512 512 0 0 0-60.15-53.873c-3.072-2.345-5.427-3.983-8.15-5.98 38.066-13.077 64.7-44.38 64.7-81.434 0-49.9-47.37-88.08-103.618-88.08a99.4 99.4 0 0 0-35.558 6.498 79 79 0 0 0-11.771 5.591c-1.966.83-6.16-.097-7.312-1.53l-.05.035c-4.291-6.43-10.763-14.402-20.168-22.569-17.9-15.554-39.092-25.15-63.294-25.15s-45.384 9.596-63.288 25.15c-9.19 7.977-15.498 15.713-19.804 22.078l-.026-.02c-1.628 1.92-5.852 2.928-7.322 2.221a78.4 78.4 0 0 0-12.144-5.811 99.5 99.5 0 0 0-35.564-6.502c-56.248 0-103.613 38.185-103.613 88.079 0 31.683 19.543 59.105 48.957 74.624a495 495 0 0 0-9.405 6.84 468 468 0 0 0-60.058 53.315C244.265 452.956 210.5 520.212 210.5 594.872c0 207.022 154.28 305.48 340.131 305.48 77.891 0 154.03-15.54 215.64-52.219 83.599-49.792 131.153-133.427 131.153-253.26-.015-70.165-33.996-135.348-89.912-194.207M646.564 601.43c10.598 0 19.184 8.791 19.184 19.615 0 10.829-8.59 19.625-19.184 19.625H569.81v56.489c0 8.289-8.591 15.006-19.185 15.006-10.598 0-19.184-6.717-19.184-15.006v-56.49h-76.754c-10.599 0-19.185-8.79-19.185-19.62s8.591-19.614 19.185-19.614h76.754V581.82h-76.754c-10.599 0-19.185-8.785-19.185-19.614s8.591-19.615 19.185-19.615h78.397l-72.78-74.399a19.917 19.917 0 0 1 0-27.735 18.893 18.893 0 0 1 27.135 0l63.186 64.584 63.186-64.584a18.903 18.903 0 0 1 26.721-.425l.42.425a19.927 19.927 0 0 1 0 27.735l-72.78 74.399h78.402c10.598 0 19.18 8.78 19.18 19.615s-8.587 19.614-19.18 19.614h-76.759v19.61z" fill="#f59e0b"/></svg>'''
+
+# 图标 (Base64)
+BASE64_ICONS = {
+    # 金色硬币
+    'coin': 'data:image/svg+xml;base64,PHN2ZyBjbGFzcz0iaWNvbiIgdmlld0JveD0iMCAwIDExMTQgMTAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCI+PHBhdGggZD0iTTgwNy41MTEgNDAwLjY2NmE1MTIgNTEyIDAgMCAwLTYwLjE1LTUzLjg3M2MtMy4wNzItMi4zNDUtNS40MjctMy45ODMtOC4xNS01Ljk4IDM4LjA2Ni0xMy4wNzcgNjQuNy00NC4zOCA2NC43LTgxLjQzNCAwLTQ5LjktNDcuMzctODguMDgtMTAzLjYxOC04OC4wOGE5OS40IDk5LjQgMCAwIDAtMzUuNTU4IDYuNDk4IDc5IDc5IDAgMCAwLTExLjc3MSA1LjU5MWMtMS45NjYuODMtNi4xNi0uMDk3LTcuMzEyLTEuNTNsLS4wNS4wMzVjLTQuMjkxLTYuNDMtMTAuNzYzLTE0LjQwMi0yMC4xNjgtMjIuNTY5LTE3LjktMTUuNTU0LTM5LjA5Mi0yNS4xNS02My4yOTQtMjUuMTVzLTQ1LjM4NCA5LjU5Ni02My4yODggMjUuMTVjLTkuMTkgNy45NzctMTUuNDk4IDE1LjcxMy0xOS44MDQgMjIuMDc4bC0uMDI2LS4wMmMtMS42MjggMS45Mi01Ljg1MiAyLjkyOC03LjMyMiAyLjIyMWE3OC40IDc4LjQgMCAwIDAtMTIuMTQ0LTUuODExIDk5LjUgOTkuNSAwIDAgMC0zNS41NjQtNi41MDJjLTU2LjI0OCAwLTEwMy42MTMgMzguMTg1LTEwMy42MTMgODguMDc5IDAgMzEuNjgzIDE5LjU0MyA1OS4xMDUgNDguOTU3IDc0LjYyNGE0OTUgNDk1IDAgMCAwLTkuNDA1IDYuODQgNDY4IDQ2OCAwIDAgMC02MC4wNTggNTMuMzE1QzI0NC4yNjUgNDUyLjk1NiAyMTAuNSA1MjAuMjEyIDIxMC41IDU5NC44NzJjMCAyMDcuMDIyIDE1NC4yOCAzMDUuNDggMzQwLjEzMSAzMDUuNDggNzcuODkxIDAgMTU0LjAzLTE1LjU0IDIxNS42NC01Mi4yMTkgODMuNTk5LTQ5Ljc5MiAxMzEuMTUzLTEzMy40MjcgMTMxLjE1My0yNTMuMjYtLjAxNS03MC4xNjUtMzMuOTk2LTEzNS4zNDgtODkuOTEyLTE5NC4yMDdNNjQ2LjU2NCA2MDEuNDNjMTAuNTk4IDAgMTkuMTg0IDguNzkxIDE5LjE4NCAxOS42MTUgMCAxMC44MjktOC41OSAxOS42MjUtMTkuMTg0IDE5LjYyNUg1NjkuODF2NTYuNDg5YzAgOC4yODktOC41OTEgMTUuMDA2LTE5LjE4NSAxNS4wMDYtMTAuNTk4IDAtMTkuMTg0LTYuNzE3LTE5LjE4NC0xNS4wMDZ2LTU2LjQ5aC03Ni43NTRjLTEwLjU5OSAwLTE5LjE4NS04Ljc5LTE5LjE4NS0xOS42MnM4LjU5MS0xOS42MTQgMTkuMTg1LTE5LjYxNGg3Ni43NTRWNTgxLjgyaC03Ni43NTRjLTEwLjU5OSAwLTE5LjE4NS04Ljc4NS0xOS4xODUtMTkuNjE0czguNTkxLTE5LjYxNSAxOS4xODUtMTkuNjE1aDc4LjM5N2wtNzIuNzgtNzQuMzk5YTE5LjkxNyAxOS45MTcgMCAwIDEgMC0yNy43MzUgMTguODkzIDE4Ljg5MyAwIDAgMSAyNy4xMzUgMGw2My4xODYgNjQuNTg0IDYzLjE4Ni02NC41ODRhMTguOTAzIDE4LjkwMyAwIDAgMSAyNi43MjEtLjQyNWwuNDIuNDI1YTE5LjkyNyAxOS45MjcgMCAwIDEgMCAyNy43MzVsLTcyLjc4IDc0LjM5OWg3OC40MDJjMTAuNTk4IDAgMTkuMTggOC43OCAxOS4xOCAxOS42MTVzLTguNTg3IDE5LjYxNC0xOS4xOCAxOS42MTRoLTc2Ljc1OXYxOS42MXoiIGZpbGw9IiNmNTllMGIiLz48L3N2Zz4='
 }
 
 
@@ -927,6 +927,7 @@ def generate_html_report(results):
         .footer { background-color: var(--bg-body); padding: 20px; text-align: center; font-size: 12px; color: var(--text-footer); }
         /* Fix SVG size */
         svg { width: 20px; height: 20px; display: block; }
+        .icon-img { width: 20px; height: 20px; vertical-align: middle; display: inline-block; }
     </style>
     """
     
@@ -964,7 +965,7 @@ def generate_html_report(results):
             money = points / 2000
             points_element = f"""
             <div class="row-item" style="color: #f59e0b; font-weight: 500;">
-                {SVG_ICONS['coin']}
+                <img src="{BASE64_ICONS['coin']}" class="icon-img" alt="coin" />
                 <span>{points} (≈￥{money:.2f})</span>
             </div>
             """
@@ -981,7 +982,6 @@ def generate_html_report(results):
             <!-- 上半部分：用户信息 + 状态徽标 -->
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                 <div class="row-item" style="font-weight: 600; font-size: 15px;">
-                    {SVG_ICONS['user']}
                     <span>{res['username']}</span>
                 </div>
                 <span style="background-color: {status_bg}; color: {status_color}; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600;">
@@ -1077,8 +1077,8 @@ def save_screenshot(driver, account_id, status="success", error_msg=""):
     :return: 截图路径或 None
     """
     try:
-        # 创建截图目录（使用 temp 目录）
-        screenshot_dir = os.path.join("temp", "screenshots")
+        # 创建截图目录（使用 temp 目录的绝对路径）
+        screenshot_dir = os.path.abspath(os.path.join("temp", "screenshots"))
         os.makedirs(screenshot_dir, exist_ok=True)
         
         # 生成截图文件名（类型_账号_时间戳）
@@ -1087,7 +1087,14 @@ def save_screenshot(driver, account_id, status="success", error_msg=""):
         
         # 先保存原始 PNG 截图
         temp_filepath = os.path.join(screenshot_dir, f"temp_{timestamp}.png")
-        driver.save_screenshot(temp_filepath)
+        if not driver.save_screenshot(temp_filepath):
+            logger.error(f"无法保存截图到: {temp_filepath}")
+            return None
+
+        # 再次确认文件存在（防止 save_screenshot 返回 True 但实际上文件未创建）
+        if not os.path.exists(temp_filepath):
+            logger.error(f"截图文件未创建: {temp_filepath}")
+            return None
         
         # 压缩并转换为 JPEG 格式（大幅减小文件大小）
         compressed_filename = f"{status}_{masked_account}_{timestamp}.jpg"
@@ -1181,7 +1188,7 @@ def compress_with_tinypng(input_path, output_path, api_key):
         return None
 
 
-def compress_with_pillow(input_path, output_path, max_width=1280, quality=75):
+def compress_with_pillow(input_path, output_path, max_width=1280, quality=40):
     """使用 Pillow 本地压缩"""
     try:
         from PIL import Image
@@ -1293,10 +1300,10 @@ def run_all_accounts():
             # 提交任务
             for i, (username, password) in enumerate(pending_accounts):
                 if i > 0 and stagger_delay > 0:
-                     # 确保最小延时为 5秒 或 用户设置的上限（取较小值）
-                     # 这样既能避免 0秒/1秒 这种极短间隔，又遵循用户配置的 max
-                     safe_min = min(5, stagger_delay)
-                     actual_delay = random.randint(safe_min, stagger_delay)
+                     # 最小延时为 5 秒
+                     lower_bound = 5
+                     upper_bound = max(5, stagger_delay)
+                     actual_delay = random.randint(lower_bound, upper_bound)
                      logger.info(f"随机等待 {actual_delay} 秒后启动下一个账号任务...")
                      time.sleep(actual_delay)
                 
