@@ -1,10 +1,15 @@
 name: 雨云每日签到
 
 on:
-  # 定时触发 - 每天北京时间 8:00 执行 (UTC 0:00)
+  # 定时触发 - 每天北京时间 8:15 执行 (UTC 0:15) - 避开 0:00 晚高峰
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '15 0 * * *'
   
+  # 代码推送时触发 (修改此文件时立即运行，用于激活定时器)
+  push:
+    paths:
+      - '.github/workflows/daily-checkin.yml'
+
   # 手动触发（方便测试）
   workflow_dispatch:
 
