@@ -2075,27 +2075,32 @@ def run_checkin(account_user=None, account_pwd=None):
                 try:
                     if hasattr(driver, 'service') and driver.service.process:
                         process = driver.service.process
+                        pid = process.pid
+                        
+                        # 1. 先尝试杀掉该 ChromeDriver 衍生的子进程 (Chrome 浏览器)
+                        # 避免僵尸 Chrome 进程残留
+                        if os.name == 'posix' and pid:
+                            try:
+                                # pkill -P <pid> 仅杀掉指定父进程的子进程
+                                logger_adapter.info(f"正在清理 PID {pid} 的衍生进程...")
+                                subprocess.run(['pkill', '-9', '-P', str(pid)], 
+                                             stderr=subprocess.DEVNULL)
+                            except Exception:
+                                pass
+
+                        # 2. 再杀掉 ChromeDriver 本身
                         if process.poll() is None:  # 进程仍在运行
-                            # 终止进程
                             process.terminate()
                             try:
-                                # 等待最多2秒
                                 process.wait(timeout=2)
                             except subprocess.TimeoutExpired:
-                                # 如果还没退出，强制kill
                                 process.kill()
                                 process.wait()
-                            logger_adapter.info("已终止 ChromeDriver 进程")
+                            logger_adapter.info(f"已终止 ChromeDriver 进程 (PID: {pid})")
                 except Exception as e:
-                    logger.debug(f"清理 ChromeDriver 进程时出错: {e}")
+                    logger_adapter.debug(f"清理 ChromeDriver 进程时出错: {e}")
                 
-                # 额外保险：清理可能残留的Chrome进程
-                if os.name == 'posix':
-                    try:
-                        subprocess.run(['pkill', '-9', '-f', 'chrome.*--test-type'], 
-                                     timeout=3, stderr=subprocess.DEVNULL)
-                    except:
-                        pass
+
                         
             except Exception as e:
                 logger_adapter.error(f"WebDriver 清理过程出现异常: {e}")
