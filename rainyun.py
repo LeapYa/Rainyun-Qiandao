@@ -5,6 +5,7 @@ import random
 import time
 import schedule
 import sys
+import threading
 from datetime import datetime, timedelta
 
 # 全局变量，用于存储Selenium模块
@@ -1253,12 +1254,14 @@ def parse_accounts():
 
 def run_all_accounts():
     """执行所有账号的签到任务"""
-    # 任务开始前清理可能的僵尸进程
-    logger.info("检查并清理可能的僵尸进程...")
-    cleanup_zombie_processes()
-    
+
+    import concurrent.futures
+
     # 从环境变量获取最大重试次数，默认为2
     max_retries = int(os.getenv("CHECKIN_MAX_RETRIES", "2"))
+    # 并发相关配置
+    max_workers = int(os.getenv("MAX_WORKERS", "3"))
+    stagger_delay = int(os.getenv("MAX_DELAY", "15"))  # 账号间错开启动时间（秒）
     
     accounts = parse_accounts()
     results = {}
@@ -1278,48 +1281,65 @@ def run_all_accounts():
     
     while pending_accounts and current_attempt <= max_retries:
         if current_attempt == 0:
-            logger.info(f"========== 开始执行签到任务（共 {len(pending_accounts)} 个账号） ==========")
+            logger.info(f"========== 开始执行签到任务（共 {len(pending_accounts)} 个账号，并发数: {max_workers}） ==========")
         else:
             logger.info(f"========== 第 {current_attempt} 次重试（共 {len(pending_accounts)} 个失败账号） ==========")
         
         failed_accounts = []
+        future_to_account = {}
         
-        for i, (username, password) in enumerate(pending_accounts, 1):
-            account_idx = results[username]['index']
-            retry_info = f"（第 {results[username]['retry_count'] + 1} 次尝试）" if results[username]['retry_count'] > 0 else ""
-            logger.info(f"========== 执行账号 {account_idx}/{len(accounts)} {retry_info} ==========")
-            
-            result = run_checkin(username, password)
-            results[username]['result'] = result
-            
-            if result['status']:
-                logger.info(f"✅ 账号 {account_idx} 签到成功")
-            else:
-                logger.error(f"❌ 账号 {account_idx} 签到失败: {result['msg']}")
-                results[username]['retry_count'] += 1
-                # 还没达到最大重试次数，加入待重试列表
-                if results[username]['retry_count'] <= max_retries:
-                    failed_accounts.append((username, password))
-            
-            # 每个账号执行后清理一次
-            cleanup_zombie_processes()
-            
-            # 账号间延时（避免频繁操作）
-            if i < len(pending_accounts):
-                delay = random.randint(30, 120)  # 30-120秒随机延时
-                logger.info(f"账号间延时等待 {delay} 秒...")
-                time.sleep(delay)
-        
+        # 使用线程池并发执行
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交任务
+            for i, (username, password) in enumerate(pending_accounts):
+                # 错开启动时间
+                if i > 0 and stagger_delay > 0:
+                     logger.info(f"等待 {stagger_delay} 秒后启动下一个账号任务...")
+                     time.sleep(stagger_delay)
+                
+                account_idx = results[username]['index']
+                retry_info = f"（第 {results[username]['retry_count'] + 1} 次尝试）" if results[username]['retry_count'] > 0 else ""
+                logger.info(f"========== 启动账号 {account_idx}/{len(accounts)} {retry_info} ==========")
+                
+                future = executor.submit(run_checkin, username, password)
+                future_to_account[future] = username
+
+            # 获取结果
+            for future in concurrent.futures.as_completed(future_to_account):
+                username = future_to_account[future]
+                account_idx = results[username]['index']
+                
+                try:
+                    result = future.result()
+                    results[username]['result'] = result
+                    
+                    if result['status']:
+                        logger.info(f"✅ 账号 {account_idx} 签到成功")
+                    else:
+                        logger.error(f"❌ 账号 {account_idx} 签到失败: {result['msg']}")
+                        results[username]['retry_count'] += 1
+                        # 还没达到最大重试次数，加入待重试列表
+                        if results[username]['retry_count'] <= max_retries:
+                            # 注意：这里不能直接 append 到 failed_accounts，因为主线程在等待所有 future 完成
+                            # 但在这里 append 是安全的，因为 failed_accounts 是局部变量，且只在当前 while 循环迭代中使用
+                            failed_accounts.append((username, results[username]['password']))
+                except Exception as e:
+                    logger.error(f"❌ 账号 {account_idx} 执行异常: {e}")
+                    results[username]['retry_count'] += 1
+                    if results[username]['retry_count'] <= max_retries:
+                        failed_accounts.append((username, results[username]['password']))
+
         # 更新待执行列表为失败账号
         pending_accounts = failed_accounts
         current_attempt += 1
         
         # 如果还有待重试的账号，增加重试间隔
         if pending_accounts:
-            retry_delay = random.randint(60, 180)  # 重试前等待 1-3 分钟
-            logger.info(f"等待 {retry_delay} 秒后开始重试...")
-            time.sleep(retry_delay)
+            retry_wait = 60  # 固定重试等待 60 秒
+            logger.info(f"等待 {retry_wait} 秒后开始重试 {len(pending_accounts)} 个失败账号...")
+            time.sleep(retry_wait)
     
+
     # 汇总最终结果
     final_results = [results[username]['result'] for username, _ in accounts]
     success_count = len([r for r in final_results if r and r['status']])
@@ -1427,15 +1447,6 @@ def init_selenium(account_id: str, proxy: str = None):
     ops.add_argument(f"--user-agent={user_agent}")
     logger.info(f"使用 User-Agent: {user_agent[:50]}...")  # 只显示前50个字符
     
-    # 开启无图模式 (加速加载)
-    ops.add_argument('blink-settings=imagesEnabled=false')
-    prefs = {
-        "profile.managed_default_content_settings.images": 2,
-        "profile.managed_default_content_settings.stylesheets": 2,  # 不禁止加载CSS
-    }
-    # 仅禁用图片，保留CSS以防元素定位失效
-    prefs = {"profile.managed_default_content_settings.images": 2}
-    ops.add_experimental_option("prefs", prefs)
     
     if debug:
         ops.add_experimental_option("detach", True)
@@ -1509,6 +1520,28 @@ def get_height_from_style(style):
     return re.search(r'height:\s*([\d.]+)px', style).group(1)
 
 
+
+
+# 全局变量，用于存储OCR模型 (单例模式)
+_ocr_model = None
+_det_model = None
+_model_lock = threading.Lock()
+# 推理锁，防止多线程同时调用模型导致内部状态冲突
+_inference_lock = threading.Lock()
+
+def get_shared_ocr_models():
+    """获取全局共享的 OCR 模型实例 (线程安全)"""
+    global _ocr_model, _det_model
+    if _ocr_model is None or _det_model is None:
+        with _model_lock:
+            # 双重检查锁定
+            if _ocr_model is None or _det_model is None:
+                import ddddocr
+                logger.info("正在加载OCR模型...")
+                _ocr_model = ddddocr.DdddOcr(ocr=True, show_ad=False)
+                _det_model = ddddocr.DdddOcr(det=True, show_ad=False)
+    return _ocr_model, _det_model
+
 def process_captcha(driver, timeout, retry_stats=None):
     """处理验证码（延迟加载OCR模型）"""
     # 导入Selenium模块
@@ -1532,20 +1565,28 @@ def process_captcha(driver, timeout, retry_stats=None):
 
         # 延迟导入，只在需要时加载
         import cv2
-        import ddddocr
-
-        logger.info("初始化ddddocr")
-        ocr = ddddocr.DdddOcr(ocr=True, show_ad=False)
-        det = ddddocr.DdddOcr(det=True, show_ad=False)
+        
+        # 使用全局单例模型，避免重复加载导致 OOM
+        ocr, det = get_shared_ocr_models()
         
         wait = WebDriverWait(driver, timeout)
         download_captcha_img(driver, timeout)
-        if check_captcha(ocr):
+        
+        # 检查验证码质量（使用推理锁）
+        is_captcha_valid = False
+        with _inference_lock:
+            is_captcha_valid = check_captcha(ocr)
+            
+        if is_captcha_valid:
             logger.info("开始识别验证码")
             captcha = cv2.imread("temp/captcha.jpg")
             with open("temp/captcha.jpg", 'rb') as f:
                 captcha_b = f.read()
-            bboxes = det.detection(captcha_b)
+            
+            # 目标检测（使用推理锁）
+            with _inference_lock:
+                bboxes = det.detection(captcha_b)
+                
             result = dict()
             for i in range(len(bboxes)):
                 x1, y1, x2, y2 = bboxes[i]
@@ -1843,13 +1884,6 @@ def run_checkin(account_user=None, account_pwd=None):
     
     try:
         logger.info(f"开始执行签到任务... 账号: {current_user[:5]}***{current_user[-5:] if len(current_user) > 10 else current_user}")
-        
-        # 随机延时
-        delay = random.randint(0, max_delay)
-        delay_sec = random.randint(0, 60)
-        if not debug:
-            logger.info(f"随机延时等待 {delay} 分钟 {delay_sec} 秒")
-            time.sleep(delay * 60 + delay_sec)
         
         # 获取代理IP（每个账号单独获取）
         proxy = None
