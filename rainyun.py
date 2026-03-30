@@ -1733,193 +1733,300 @@ def get_shared_ocr_models():
                 _det_model = ddddocr.DdddOcr(det=True, show_ad=False)
     return _ocr_model, _det_model
 
-def process_captcha(driver, timeout, retry_stats=None):
-    """处理验证码（延迟加载OCR模型）"""
-    # 导入Selenium模块
-    modules = import_selenium_modules()
-    WebDriverWait = modules['WebDriverWait']
-    EC = modules['EC']
-    By = modules['By']
-    ActionChains = modules['ActionChains']
-    TimeoutException = modules['TimeoutException']
-    
-    if retry_stats is None:
-        retry_stats = {'count': 0}
-    
-    try:
-        wait = WebDriverWait(driver, min(timeout, 3))
-        try:
-            wait.until(EC.presence_of_element_located((By.ID, "slideBg")))
-        except TimeoutException:
-            logger.info("未检测到可处理验证码内容，跳过验证码处理")
-            return
+class CaptchaProvider:
+    """验证码提供者基类"""
+    def solve(self, driver, timeout, retry_stats, logger_adapter):
+        """
+        执行验证码破解逻辑
+        :param driver: WebDriver 实例
+        :param timeout: 超时时间
+        :param retry_stats: 重试统计字典 {'count': 0}
+        :param logger_adapter: 日志记录器
+        """
+        raise NotImplementedError
 
-        # 延迟导入，只在需要时加载
-        import cv2
+
+class TencentCaptchaProvider(CaptchaProvider):
+    """腾讯滑块验证码处理"""
+    
+    def solve(self, driver, timeout, retry_stats, logger_adapter):
+        # 导入Selenium模块
+        modules = import_selenium_modules()
+        WebDriverWait = modules['WebDriverWait']
+        EC = modules['EC']
+        By = modules['By']
+        ActionChains = modules['ActionChains']
+        TimeoutException = modules['TimeoutException']
         
-        # 使用全局单例模型，避免重复加载导致 OOM
-        ocr, det = get_shared_ocr_models()
+        if retry_stats is None:
+            retry_stats = {'count': 0}
+            
+        try:
+            wait = WebDriverWait(driver, min(timeout, 3))
+            try:
+                wait.until(EC.presence_of_element_located((By.ID, "slideBg")))
+            except TimeoutException:
+                logger_adapter.info("未检测到可处理验证码内容，跳过验证码处理")
+                return
+
+            # 延迟导入，只在需要时加载
+            import cv2
+            
+            # 使用全局单例模型，避免重复加载导致 OOM
+            ocr, det = get_shared_ocr_models()
+            
+            wait = WebDriverWait(driver, timeout)
+            self._download_captcha_img(driver, timeout, logger_adapter)
+            
+            # 检查验证码质量（使用推理锁）
+            is_captcha_valid = False
+            with _inference_lock:
+                is_captcha_valid = self._check_captcha(ocr)
+                
+            if is_captcha_valid:
+                logger_adapter.info("开始识别验证码")
+                captcha = cv2.imread("temp/captcha.jpg")
+                with open("temp/captcha.jpg", 'rb') as f:
+                    captcha_b = f.read()
+                
+                # 目标检测（使用推理锁）
+                with _inference_lock:
+                    bboxes = det.detection(captcha_b)
+                
+                # 提取候选框图片和坐标信息
+                spec_infos = []
+                for i in range(len(bboxes)):
+                    x1, y1, x2, y2 = bboxes[i]
+                    spec = captcha[y1:y2, x1:x2]
+                    spec_path = f"temp/spec_{i + 1}.jpg"
+                    cv2.imwrite(spec_path, spec)
+                    pos = f"{int((x1 + x2) / 2)},{int((y1 + y2) / 2)}"
+                    spec_infos.append({"path": spec_path, "pos": pos, "index": i})
+                    
+                # 构建 3 x N 评分矩阵
+                score_matrix = []
+                import itertools
+                
+                for j in range(3):
+                    sprite_path = f"temp/sprite_{j + 1}.jpg"
+                    sprite_scores = []
+                    for k, spec in enumerate(spec_infos):
+                        score, is_semantic = self._compute_score(sprite_path, spec["path"], ocr)
+                        sprite_scores.append(score)
+                        logger_adapter.debug(f"目标 {j + 1} -> 候选 {k + 1}: 得分 {score:.2f} (语义匹配: {is_semantic})")
+                    score_matrix.append(sprite_scores)
+                
+                # 基于排列组合寻找全局最优唯一分配
+                best_assignment = None
+                best_total_score = -1.0
+                all_spec_indices = list(range(len(spec_infos)))
+                
+                if len(spec_infos) >= 3:
+                    for perm in itertools.permutations(all_spec_indices, 3):
+                        total_score = score_matrix[0][perm[0]] + score_matrix[1][perm[1]] + score_matrix[2][perm[2]]
+                        if total_score > best_total_score:
+                            best_total_score = total_score
+                            best_assignment = perm
+                
+                # 判断是否有分配结果以及总分是否过度悲观 (底线设为最低每图得分为类似0.25随机分或有1个Inlier)
+                # 因为加入了 OCR (100分)，如果是纯文字肯定过300分。如果是图形，起码总和该有个 4~5 (几个内点)。
+                # 不符合底线则说明由于各种原因没认出来。
+                MIN_ACCEPTABLE_TOTAL_SCORE = 2.0
+                
+                if best_assignment is not None and best_total_score >= MIN_ACCEPTABLE_TOTAL_SCORE:
+                    logger_adapter.info(f"成功找到全局最优组合，验证码总置信分: {best_total_score:.2f}")
+                    for j in range(3):
+                        spec_idx = best_assignment[j]
+                        positon = spec_infos[spec_idx]["pos"]
+                        score = score_matrix[j][spec_idx]
+                        logger_adapter.info(f"--> 图案 {j + 1} 选择候选框 {spec_idx + 1} 位于 ({positon})，单项得分：{score:.2f}")
+                        
+                        slideBg = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="slideBg"]')))
+                        style = slideBg.get_attribute("style")
+                        x, y = int(positon.split(",")[0]), int(positon.split(",")[1])
+                        width_raw, height_raw = captcha.shape[1], captcha.shape[0]
+                        width, height = float(get_width_from_style(style)), float(get_height_from_style(style))
+                        x_offset, y_offset = float(-width / 2), float(-height / 2)
+                        final_x, final_y = int(x_offset + x / width_raw * width), int(y_offset + y / height_raw * height)
+                        ActionChains(driver).move_to_element_with_offset(slideBg, final_x, final_y).click().perform()
+                        time.sleep(0.3)
+                        
+                    confirm = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="tcStatus"]/div[2]/div[2]/div/div')))
+                    logger_adapter.info("提交验证码")
+                    time.sleep(0.5)
+                    confirm.click()
+                    time.sleep(3)
+                    
+                    # 检查是否通过
+                    result_elem = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="tcOperation"]')))
+                    if result_elem.get_attribute("class") == 'tc-opera pointer show-success':
+                        logger_adapter.info("验证码通过 🎉")
+                        return
+                    else:
+                        logger_adapter.error(f"验证码提交后未通过，图形可能过于相近导致混淆。")
+                        retry_stats['count'] += 1
+                else:
+                    score_info = f"{best_total_score:.2f}" if best_assignment is not None else "候选框不足3个"
+                    logger_adapter.error(f"当前图片置信度极低（总分 {score_info} < {MIN_ACCEPTABLE_TOTAL_SCORE}），避免瞎猜，提早刷新换图")
+                    retry_stats['count'] += 1
+                    
+            else:
+                logger_adapter.error("当前验证码大图质量低，可能无法安全识别，刷新")
+                retry_stats['count'] += 1
+            
+            # 执行提早换图逻辑
+            reload_btn = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="reload"]')))
+            time.sleep(1)
+            reload_btn.click()
+            time.sleep(3)
+            logger_adapter.info(f"重新发起验证码挑战 (当前重试: {retry_stats['count']})")
+            return self.solve(driver, timeout, retry_stats, logger_adapter)
+            
+        except TimeoutException:
+            logger_adapter.error("获取验证码图片等元素超时")
+        except Exception as e:
+            logger_adapter.error(f"验证码执行流程中发生未知错误: {e}")
+            import traceback
+            logger_adapter.debug(traceback.format_exc())
+            # 如果发生错误，不妨尝试重试
+            retry_stats['count'] += 1
+            try:
+                reload_btn = driver.find_element(By.XPATH, '//*[@id="reload"]')
+                reload_btn.click()
+                time.sleep(3)
+                return self.solve(driver, timeout, retry_stats, logger_adapter)
+            except:
+                pass
+        finally:
+            logger_adapter.debug("验证码单次处理周期完毕")
+
+    def _download_captcha_img(self, driver, timeout, logger_adapter):
+        # 导入Selenium模块
+        modules = import_selenium_modules()
+        WebDriverWait = modules['WebDriverWait']
+        EC = modules['EC']
+        By = modules['By']
         
         wait = WebDriverWait(driver, timeout)
-        download_captcha_img(driver, timeout)
+        if os.path.exists("temp"):
+            for filename in os.listdir("temp"):
+                file_path = os.path.join("temp", filename)
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.remove(file_path)
+                    
+        # 获取当前浏览器的 User-Agent
+        try:
+            current_ua = driver.execute_script("return navigator.userAgent;")
+            logger_adapter.debug(f"下载图片使用 UA: {current_ua[:50]}...")
+        except Exception:
+            current_ua = None
+            
+        slideBg = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="slideBg"]')))
+        img1_style = slideBg.get_attribute("style")
+        img1_url = get_url_from_style(img1_style)
+        logger_adapter.info("开始下载验证码图片(1): " + img1_url)
+        download_image(img1_url, "captcha.jpg", user_agent=current_ua)
         
-        # 检查验证码质量（使用推理锁）
-        is_captcha_valid = False
-        with _inference_lock:
-            is_captcha_valid = check_captcha(ocr)
-            
-        if is_captcha_valid:
-            logger.info("开始识别验证码")
-            captcha = cv2.imread("temp/captcha.jpg")
-            with open("temp/captcha.jpg", 'rb') as f:
-                captcha_b = f.read()
-            
-            # 目标检测（使用推理锁）
+        sprite = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="instruction"]/div/img')))
+        img2_url = sprite.get_attribute("src")
+        logger_adapter.info("开始下载验证码图片(2): " + img2_url)
+        download_image(img2_url, "sprite.jpg", user_agent=current_ua)
+
+    def _check_captcha(self, ocr) -> bool:
+        """检查验证码图片质量（延迟导入cv2）"""
+        import cv2
+        
+        raw = cv2.imread("temp/sprite.jpg")
+        for i in range(3):
+            w = raw.shape[1]
+            temp = raw[:, w // 3 * i: w // 3 * (i + 1)]
+            cv2.imwrite(f"temp/sprite_{i + 1}.jpg", temp)
+            with open(f"temp/sprite_{i + 1}.jpg", mode="rb") as f:
+                temp_rb = f.read()
+            if ocr.classification(temp_rb) in ["0", "1"]:
+                return False
+        return True
+
+    def _compute_score(self, sprite_path, spec_path, ocr):
+        """混合评分器：OCR 语义相似度 + SIFT 几何一致性内点评分"""
+        import cv2
+        import numpy as np
+        
+        # 1. OCR 语义比对 (最高优先级，用于解决汉字和数字)
+        try:
+            with open(sprite_path, "rb") as f:
+                sprite_bytes = f.read()
+            with open(spec_path, "rb") as f:
+                spec_bytes = f.read()
+                
             with _inference_lock:
-                bboxes = det.detection(captcha_b)
+                sprite_char = ocr.classification(sprite_bytes)
+                spec_char = ocr.classification(spec_bytes)
                 
-            result = dict()
-            for i in range(len(bboxes)):
-                x1, y1, x2, y2 = bboxes[i]
-                spec = captcha[y1:y2, x1:x2]
-                cv2.imwrite(f"temp/spec_{i + 1}.jpg", spec)
-                for j in range(3):
-                    similarity, matched = compute_similarity(f"temp/sprite_{j + 1}.jpg", f"temp/spec_{i + 1}.jpg")
-                    similarity_key = f"sprite_{j + 1}.similarity"
-                    position_key = f"sprite_{j + 1}.position"
-                    if similarity_key in result.keys():
-                        if float(result[similarity_key]) < similarity:
-                            result[similarity_key] = similarity
-                            result[position_key] = f"{int((x1 + x2) / 2)},{int((y1 + y2) / 2)}"
-                    else:
-                        result[similarity_key] = similarity
-                        result[position_key] = f"{int((x1 + x2) / 2)},{int((y1 + y2) / 2)}"
-            if check_answer(result):
-                for i in range(3):
-                    similarity_key = f"sprite_{i + 1}.similarity"
-                    position_key = f"sprite_{i + 1}.position"
-                    positon = result[position_key]
-                    logger.info(f"图案 {i + 1} 位于 ({positon})，匹配率：{result[similarity_key]}")
-                    slideBg = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="slideBg"]')))
-                    style = slideBg.get_attribute("style")
-                    x, y = int(positon.split(",")[0]), int(positon.split(",")[1])
-                    width_raw, height_raw = captcha.shape[1], captcha.shape[0]
-                    width, height = float(get_width_from_style(style)), float(get_height_from_style(style))
-                    x_offset, y_offset = float(-width / 2), float(-height / 2)
-                    final_x, final_y = int(x_offset + x / width_raw * width), int(y_offset + y / height_raw * height)
-                    ActionChains(driver).move_to_element_with_offset(slideBg, final_x, final_y).click().perform()
-                confirm = wait.until(
-                    EC.element_to_be_clickable((By.XPATH, '//*[@id="tcStatus"]/div[2]/div[2]/div/div')))
-                logger.info("提交验证码")
-                confirm.click()
-                time.sleep(5)
-                result = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="tcOperation"]')))
-                if result.get_attribute("class") == 'tc-opera pointer show-success':
-                    logger.info("验证码通过")
-                    return
-                else:
-                    logger.error("验证码未通过，正在重试")
-                    retry_stats['count'] += 1
-            else:
-                logger.error("验证码识别失败，正在重试")
-                retry_stats['count'] += 1
-        else:
-            logger.error("当前验证码识别率低，尝试刷新")
-            retry_stats['count'] += 1
+            # 去除空字符串及无效符
+            sprite_char = sprite_char.strip() if sprite_char else ""
+            spec_char = spec_char.strip() if spec_char else ""
+            
+            # 如果都不为空且一致（排除单调标识符0/1），直接赋予极大权重
+            if len(sprite_char) > 0 and len(spec_char) > 0:
+                if sprite_char == spec_char and sprite_char not in ["0", "1"]:
+                    return 100.0, True
+        except Exception:
+            pass
+
+        # 2. SIFT + RANSAC 单应性几何校验 (用于解决无规则图形和图标)
+        img1 = cv2.imread(sprite_path, cv2.IMREAD_GRAYSCALE)
+        img2 = cv2.imread(spec_path, cv2.IMREAD_GRAYSCALE)
         
-        reload = driver.find_element(By.XPATH, '//*[@id="reload"]')
-        time.sleep(5)
-        reload.click()
-        time.sleep(5)
-        process_captcha(driver, timeout, retry_stats)
-    except TimeoutException:
-        logger.error("获取验证码图片失败")
-    finally:
-        # 函数结束后，OCR模型会自动释放内存
-        logger.debug("验证码处理完成，OCR 模型将被释放")
-
-
-def download_captcha_img(driver, timeout):
-    # 导入Selenium模块
-    modules = import_selenium_modules()
-    WebDriverWait = modules['WebDriverWait']
-    EC = modules['EC']
-    By = modules['By']
-    
-    wait = WebDriverWait(driver, timeout)
-    if os.path.exists("temp"):
-        for filename in os.listdir("temp"):
-            file_path = os.path.join("temp", filename)
-            if os.path.isfile(file_path) or os.path.islink(file_path):
-                os.remove(file_path)
+        if img1 is None or img2 is None:
+            return 0.0, False
+            
+        sift = cv2.SIFT_create(nfeatures=500, contrastThreshold=0.02, edgeThreshold=15)
+        kp1, des1 = sift.detectAndCompute(img1, None)
+        kp2, des2 = sift.detectAndCompute(img2, None)
+        
+        if des1 is None or des2 is None or len(kp1) < 4 or len(kp2) < 4:
+            return 0.0, False
+            
+        bf = cv2.BFMatcher()
+        matches = bf.knnMatch(des1, des2, k=2)
+        
+        good = []
+        for m_n in matches:
+            if len(m_n) == 2:
+                m, n = m_n
+                if m.distance < 0.8 * n.distance:
+                    good.append(m)
+                    
+        # 当至少有 4 个好匹配点时，才能构成平面几何校验
+        if len(good) >= 4:
+            src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+            dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+            
+            try:
+                # 使用 RANSAC 进行单应性空间一致校验
+                M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+                if mask is not None:
+                    inliers = np.sum(mask)
+                    # 每 1 个合规内点计 1 分，满 4 个就能突破提早刷新底线
+                    return float(inliers), False
+            except Exception:
+                pass
                 
-    # 获取当前浏览器的 User-Agent
-    try:
-        current_ua = driver.execute_script("return navigator.userAgent;")
-        logger.debug(f"下载图片使用 UA: {current_ua[:50]}...")
-    except Exception:
-        current_ua = None
-        
-    slideBg = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="slideBg"]')))
-    img1_style = slideBg.get_attribute("style")
-    img1_url = get_url_from_style(img1_style)
-    logger.info("开始下载验证码图片(1): " + img1_url)
-    download_image(img1_url, "captcha.jpg", user_agent=current_ua)
-    
-    sprite = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="instruction"]/div/img')))
-    img2_url = sprite.get_attribute("src")
-    logger.info("开始下载验证码图片(2): " + img2_url)
-    download_image(img2_url, "sprite.jpg", user_agent=current_ua)
+        # 低保得分（如果只有可怜的特征点，且无法构成面）。避免遇到极少特征点的时候全盘 0 分。
+        if len(des1) > 0:
+            return len(good) / len(des1), False
+            
+        return 0.0, False
 
 
-def check_captcha(ocr) -> bool:
-    """检查验证码图片质量（延迟导入cv2）"""
-    import cv2
-    
-    raw = cv2.imread("temp/sprite.jpg")
-    for i in range(3):
-        w = raw.shape[1]
-        temp = raw[:, w // 3 * i: w // 3 * (i + 1)]
-        cv2.imwrite(f"temp/sprite_{i + 1}.jpg", temp)
-        with open(f"temp/sprite_{i + 1}.jpg", mode="rb") as f:
-            temp_rb = f.read()
-        if ocr.classification(temp_rb) in ["0", "1"]:
-            return False
-    return True
-
-
-# 检查是否存在重复坐标，快速判断识别错误
-def check_answer(d: dict) -> bool:
-    flipped = dict()
-    for key in d.keys():
-        flipped[d[key]] = key
-    return len(d.values()) == len(flipped.keys())
-
-
-def compute_similarity(img1_path, img2_path):
-    """计算图片相似度（延迟导入cv2）"""
-    import cv2
-    
-    img1 = cv2.imread(img1_path, cv2.IMREAD_GRAYSCALE)
-    img2 = cv2.imread(img2_path, cv2.IMREAD_GRAYSCALE)
-
-    sift = cv2.SIFT_create()
-    kp1, des1 = sift.detectAndCompute(img1, None)
-    kp2, des2 = sift.detectAndCompute(img2, None)
-
-    if des1 is None or des2 is None:
-        return 0.0, 0
-
-    bf = cv2.BFMatcher()
-    matches = bf.knnMatch(des1, des2, k=2)
-
-    good = [m for m_n in matches if len(m_n) == 2 for m, n in [m_n] if m.distance < 0.8 * n.distance]
-
-    if len(good) == 0:
-        return 0.0, 0
-
-    similarity = len(good) / len(matches)
-    return similarity, len(good)
+class CaptchaFactory:
+    """验证码工厂类"""
+    @classmethod
+    def create_provider(cls, captcha_type: str = "tencent") -> CaptchaProvider:
+        if captcha_type == "tencent":
+            return TencentCaptchaProvider()
+        raise ValueError(f"Unknown captcha type: {captcha_type}")
 
 
 def dismiss_modal_confirm(driver, timeout):
@@ -2152,7 +2259,8 @@ def run_checkin(account_user=None, account_pwd=None):
                 login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
                 logger_adapter.warning("触发验证码！")
                 driver.switch_to.frame("tcaptcha_iframe_dy")
-                process_captcha(driver, timeout, retry_stats)
+                captcha_provider = CaptchaFactory.create_provider("tencent")
+                captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
             except TimeoutException:
                 logger_adapter.info("未触发验证码")
             
@@ -2202,7 +2310,8 @@ def run_checkin(account_user=None, account_pwd=None):
                 try:
                     captcha_iframe = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
                     driver.switch_to.frame(captcha_iframe)
-                    process_captcha(driver, timeout, retry_stats)
+                    captcha_provider = CaptchaFactory.create_provider("tencent")
+                    captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
                 finally:
                     driver.switch_to.default_content()
                 driver.implicitly_wait(5)
