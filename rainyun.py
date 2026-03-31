@@ -1806,7 +1806,12 @@ class TencentCaptchaProvider(CaptchaProvider):
                 spec_path = f"temp/spec_{i + 1}.jpg"
                 cv2.imwrite(spec_path, spec)
                 pos = f"{int((x1 + x2) / 2)},{int((y1 + y2) / 2)}"
-                spec_infos.append({"path": spec_path, "pos": pos, "index": i})
+                spec_infos.append({
+                    "path": spec_path,
+                    "pos": pos,
+                    "index": i,
+                    "bbox": (x1, y1, x2, y2),
+                })
                 
             # --- 阶段 1: 基于目标检测 + OCR/SIFT 的全局分配 ---
             best_assignment = None
@@ -1838,10 +1843,28 @@ class TencentCaptchaProvider(CaptchaProvider):
             if best_assignment is not None and best_total_score >= MIN_ACCEPTABLE_TOTAL_SCORE:
                 logger_adapter.info(f"成功找到全局最优组合，验证码一阶段置信分: {best_total_score:.2f}")
                 for j in range(3):
+                    sprite_path = f"temp/sprite_{j + 1}.jpg"
                     spec_idx = best_assignment[j]
-                    positon = spec_infos[spec_idx]["pos"]
+                    spec_info = spec_infos[spec_idx]
+                    positon = spec_info["pos"]
                     score = score_matrix[j][spec_idx]
-                    logger_adapter.info(f"--> 图案 {j + 1} 选择候选框 {spec_idx + 1} 位于 ({positon})，单项得分：{score:.2f}")
+                    refined_pos, refined_score = self._find_sprite_by_template(
+                        sprite_path,
+                        "temp/captcha.jpg",
+                        search_box=spec_info["bbox"],
+                        padding=12,
+                    )
+                    if refined_pos:
+                        positon = refined_pos
+                        logger_adapter.info(
+                            f"--> 图案 {j + 1} 选择候选框 {spec_idx + 1}，候选框中心 ({spec_info['pos']}) -> "
+                            f"局部精修坐标 ({positon})，单项得分：{score:.2f}，精修边缘分：{refined_score:.2f}"
+                        )
+                    else:
+                        logger_adapter.info(
+                            f"--> 图案 {j + 1} 选择候选框 {spec_idx + 1} 位于 ({positon})，"
+                            f"单项得分：{score:.2f}，局部精修失败，回退候选框中心"
+                        )
                     final_click_positions.append(positon)
             else:
                 score_info = f"{best_total_score:.2f}" if best_assignment is not None else "候选框不足3个"
@@ -1850,19 +1873,42 @@ class TencentCaptchaProvider(CaptchaProvider):
                 
             # --- 阶段 2: 全图边缘模板匹配搜索 ---
             if use_fallback:
-                final_click_positions = []
-                fallback_total_score = 0.0
+                fallback_candidates = []
                 for j in range(3):
                     sprite_path = f"temp/sprite_{j + 1}.jpg"
-                    pos, score = self._find_sprite_by_template(sprite_path, "temp/captcha.jpg")
-                    fallback_total_score += score
-                    logger_adapter.info(f"--> [全图匹配] 图案 {j + 1} 匹配坐标 ({pos})，边缘响应分：{score:.2f}")
-                    if pos:
-                        final_click_positions.append(pos)
+                    candidates = self._find_template_candidates(
+                        sprite_path,
+                        "temp/captcha.jpg",
+                        top_k=5,
+                        min_distance=24,
+                    )
+                    fallback_candidates.append(candidates)
+                    if candidates:
+                        top_candidate = candidates[0]
+                        logger_adapter.info(
+                            f"--> [全图匹配] 图案 {j + 1} 首选坐标 ({top_candidate['pos']})，"
+                            f"候选数：{len(candidates)}，边缘响应分：{top_candidate['score']:.2f}"
+                        )
+                    else:
+                        logger_adapter.info(f"--> [全图匹配] 图案 {j + 1} 未找到候选坐标")
+
+                final_click_positions, fallback_total_score = self._select_best_candidate_combo(
+                    fallback_candidates,
+                    min_distance=24,
+                )
                 
                 # Canny 响应度如果在 0.15 以下，说明可能图太花导致边缘都消失
                 if fallback_total_score < 0.15 or len(final_click_positions) < 3:
                     logger_adapter.error(f"全图匹配响应度过低 ({fallback_total_score:.2f})，放弃提交并刷新")
+                    self._save_captcha_debug_bundle(
+                        logger_adapter,
+                        stage="fallback_low_score",
+                        retry_count=retry_stats['count'],
+                        extra={
+                            "fallback_total_score": fallback_total_score,
+                            "click_positions": final_click_positions,
+                        },
+                    )
                     final_click_positions = []  # 触发失败换图逻辑
             
             # --- 执行点击动作 ---
@@ -1891,6 +1937,16 @@ class TencentCaptchaProvider(CaptchaProvider):
                     return
                 else:
                     logger_adapter.error(f"验证码提交后未通过，匹配坐标可能存在偏移。")
+                    self._save_captcha_debug_bundle(
+                        logger_adapter,
+                        stage="submit_failed",
+                        retry_count=retry_stats['count'],
+                        extra={
+                            "click_positions": final_click_positions,
+                            "used_fallback": use_fallback,
+                            "best_total_score": best_total_score,
+                        },
+                    )
                     retry_stats['count'] += 1
             else:
                 retry_stats['count'] += 1
@@ -1953,15 +2009,66 @@ class TencentCaptchaProvider(CaptchaProvider):
         logger_adapter.info("开始下载验证码图片(2): " + img2_url)
         download_image(img2_url, "sprite.jpg", user_agent=current_ua)
 
-    def _find_sprite_by_template(self, sprite_path, captcha_path):
-        """当目标检测由于背景干扰失败时，采用 Canny 边缘及多角度模板匹配进行全图搜索"""
+    def _distance(self, point_a, point_b):
+        import math
+
+        return math.dist(point_a, point_b)
+
+    def _make_safe_name(self, raw_name):
+        import re
+
+        safe_name = re.sub(r'[^0-9A-Za-z._-]+', '_', raw_name or "unknown")
+        return safe_name.strip("._") or "unknown"
+
+    def _save_captcha_debug_bundle(self, logger_adapter, stage, retry_count, extra=None):
+        import json
+        import shutil
+        from datetime import datetime
+
+        account_prefix = self._make_safe_name(getattr(logger_adapter, "extra", {}).get("prefix", "unknown"))
+        bundle_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]}_{stage}_r{retry_count}"
+        bundle_dir = os.path.join("logs", "captcha_debug", account_prefix, bundle_name)
+        os.makedirs(bundle_dir, exist_ok=True)
+
+        temp_dir = "temp"
+        copied_files = []
+        if os.path.isdir(temp_dir):
+            for filename in sorted(os.listdir(temp_dir)):
+                if not (
+                    filename in {"captcha.jpg", "sprite.jpg"}
+                    or filename.startswith("sprite_")
+                    or filename.startswith("spec_")
+                ):
+                    continue
+                source_path = os.path.join(temp_dir, filename)
+                if not os.path.isfile(source_path):
+                    continue
+                shutil.copy2(source_path, os.path.join(bundle_dir, filename))
+                copied_files.append(filename)
+
+        metadata = {
+            "stage": stage,
+            "retry_count": retry_count,
+            "account_prefix": getattr(logger_adapter, "extra", {}).get("prefix", "unknown"),
+            "captured_at": datetime.now().isoformat(timespec="seconds"),
+            "copied_files": copied_files,
+            "extra": extra or {},
+        }
+        metadata_path = os.path.join(bundle_dir, "metadata.json")
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+        logger_adapter.info(f"已保存验证码调试样本到 {bundle_dir}")
+
+    def _find_template_candidates(self, sprite_path, captcha_path, search_box=None, top_k=5, min_distance=24, padding=0):
+        """返回模板匹配候选点，用于局部精修和全图降级搜索"""
         import cv2
         import numpy as np
         
         sprite_img = cv2.imread(sprite_path)
         captcha_img = cv2.imread(captcha_path)
         if sprite_img is None or captcha_img is None:
-            return None, 0.0
+            return []
             
         # 1. 动态过滤白底（提取真实图标部分）
         gray_sprite = cv2.cvtColor(sprite_img, cv2.COLOR_BGR2GRAY)
@@ -1979,15 +2086,36 @@ class TencentCaptchaProvider(CaptchaProvider):
             sprite_icon = sprite_img
             
         sprite_gray = cv2.cvtColor(sprite_icon, cv2.COLOR_BGR2GRAY)
-        captcha_gray = cv2.cvtColor(captcha_img, cv2.COLOR_BGR2GRAY)
+
+        origin_x, origin_y = 0, 0
+        if search_box is not None:
+            x1, y1, x2, y2 = search_box
+            x1 = max(0, x1 - padding)
+            y1 = max(0, y1 - padding)
+            x2 = min(captcha_img.shape[1], x2 + padding)
+            y2 = min(captcha_img.shape[0], y2 + padding)
+            captcha_view = captcha_img[y1:y2, x1:x2]
+            origin_x, origin_y = x1, y1
+        else:
+            captcha_view = captcha_img
+
+        if captcha_view.size == 0:
+            return []
+
+        captcha_gray = cv2.cvtColor(captcha_view, cv2.COLOR_BGR2GRAY)
         
         # 2. 提取 Canny 轮廓
         sprite_canny = cv2.Canny(sprite_gray, 50, 150)
         captcha_canny = cv2.Canny(captcha_gray, 50, 150)
-        
+
+        if (
+            captcha_canny.shape[0] < sprite_canny.shape[0]
+            or captcha_canny.shape[1] < sprite_canny.shape[1]
+        ):
+            return []
+
         h_s, w_s = sprite_canny.shape
-        best_score = -1.0
-        best_loc = (0, 0)
+        candidates = []
         
         # 3. 施加多重微弱旋转抵御歪斜
         for angle in [-15, 0, 15]:
@@ -1996,17 +2124,94 @@ class TencentCaptchaProvider(CaptchaProvider):
                 rotated_canny = cv2.warpAffine(sprite_canny, M, (w_s, h_s), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             else:
                 rotated_canny = sprite_canny
-                
+
+            if (
+                captcha_canny.shape[0] < rotated_canny.shape[0]
+                or captcha_canny.shape[1] < rotated_canny.shape[1]
+            ):
+                continue
+
             res = cv2.matchTemplate(captcha_canny, rotated_canny, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, max_loc = cv2.minMaxLoc(res)
-            
-            if max_val > best_score:
-                best_score = max_val
-                best_loc = max_loc
-                
-        center_x = best_loc[0] + w_s // 2
-        center_y = best_loc[1] + h_s // 2
-        return f"{center_x},{center_y}", best_score
+            res_work = res.copy()
+
+            for _ in range(top_k):
+                _, max_val, _, max_loc = cv2.minMaxLoc(res_work)
+                if max_val <= 0:
+                    break
+
+                center_x = origin_x + max_loc[0] + rotated_canny.shape[1] // 2
+                center_y = origin_y + max_loc[1] + rotated_canny.shape[0] // 2
+                candidates.append({
+                    "pos": f"{center_x},{center_y}",
+                    "coords": (center_x, center_y),
+                    "score": float(max_val),
+                    "angle": angle,
+                })
+
+                left = max(0, max_loc[0] - min_distance)
+                top = max(0, max_loc[1] - min_distance)
+                right = min(res_work.shape[1], max_loc[0] + rotated_canny.shape[1] + min_distance)
+                bottom = min(res_work.shape[0], max_loc[1] + rotated_canny.shape[0] + min_distance)
+                res_work[top:bottom, left:right] = -1.0
+
+        deduped_candidates = []
+        for candidate in sorted(candidates, key=lambda item: item["score"], reverse=True):
+            if any(
+                self._distance(candidate["coords"], existing["coords"]) < min_distance
+                for existing in deduped_candidates
+            ):
+                continue
+            deduped_candidates.append(candidate)
+            if len(deduped_candidates) >= top_k:
+                break
+
+        return deduped_candidates
+
+    def _find_sprite_by_template(self, sprite_path, captcha_path, search_box=None, padding=0):
+        """当目标检测由于背景干扰失败时，采用 Canny 边缘及多角度模板匹配进行搜索"""
+        candidates = self._find_template_candidates(
+            sprite_path,
+            captcha_path,
+            search_box=search_box,
+            top_k=1,
+            min_distance=24,
+            padding=padding,
+        )
+        if not candidates:
+            return None, 0.0
+        return candidates[0]["pos"], candidates[0]["score"]
+
+    def _select_best_candidate_combo(self, candidate_groups, min_distance=24):
+        import itertools
+
+        if not candidate_groups or any(not candidates for candidates in candidate_groups):
+            return [], 0.0
+
+        best_combo = None
+        best_total_score = -1.0
+
+        for combo in itertools.product(*candidate_groups):
+            coords = [candidate["coords"] for candidate in combo]
+            has_overlap = False
+            for i in range(len(coords)):
+                for j in range(i + 1, len(coords)):
+                    if self._distance(coords[i], coords[j]) < min_distance:
+                        has_overlap = True
+                        break
+                if has_overlap:
+                    break
+            if has_overlap:
+                continue
+
+            total_score = sum(candidate["score"] for candidate in combo)
+            if total_score > best_total_score:
+                best_total_score = total_score
+                best_combo = combo
+
+        if best_combo is None:
+            return [], 0.0
+
+        return [candidate["pos"] for candidate in best_combo], best_total_score
 
     def _compute_score(self, sprite_path, spec_path, ocr):
         """混合评分器：OCR 语义相似度 + SIFT 几何一致性内点评分"""
