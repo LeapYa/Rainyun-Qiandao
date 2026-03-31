@@ -1,0 +1,62 @@
+name: 雨云测试账号签到
+
+on:
+  workflow_dispatch:
+
+jobs:
+  checkin-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装中文字体
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-wqy-zenhei
+
+      - name: 设置 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装 Chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 缓存测试 Cookie
+        uses: actions/cache@v4
+        with:
+          path: temp/cookies
+          key: test-cookies-${{ github.run_id }}
+          restore-keys: |
+            test-cookies-
+
+      - name: 执行测试签到
+        env:
+          RAINYUN_USERNAME: ${{ secrets.RAINYUN_TEST_USERNAME }}
+          RAINYUN_PASSWORD: ${{ secrets.RAINYUN_TEST_PASSWORD }}
+          RUN_MODE: 'once'
+          DEBUG: 'false'
+          MAX_DELAY: '1'
+          TIMEOUT: '60000'
+          CHECKIN_MAX_RETRIES: '3'
+          SCREENSHOT_MODE: 'failed_only'
+        run: |
+          python rainyun.py
+
+      - name: 上传测试日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-checkin-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 7
