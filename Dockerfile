@@ -19,7 +19,7 @@ RUN set -eux; \
         echo "deb ${mirror}/ ${codename}-backports ${comps}" >> /etc/apt/sources.list; \
         echo "deb ${security_mirror}/ ${codename}-security ${comps}" >> /etc/apt/sources.list; \
         apt-get update; \
-        apt-get install -y --no-install-recommends apt-transport-https ca-certificates fonts-wqy-zenhei; \
+        apt-get install -y --no-install-recommends apt-transport-https ca-certificates fonts-wqy-zenhei tzdata; \
         # 替换为 https 源
         mirror='https://mirrors.tuna.tsinghua.edu.cn/debian'; \
         security_mirror='https://mirrors.tuna.tsinghua.edu.cn/debian-security'; \
@@ -38,14 +38,14 @@ RUN set -eux; \
         echo "deb ${mirror}/ ${codename}-backports ${comps}" >> /etc/apt/sources.list; \
         echo "deb ${security_mirror}/ ${codename}-security ${comps}" >> /etc/apt/sources.list; \
         apt-get update; \
-        apt-get install -y --no-install-recommends ca-certificates fonts-wqy-zenhei; \
+        apt-get install -y --no-install-recommends ca-certificates fonts-wqy-zenhei tzdata; \
     else \
         echo "Debian version $version_id detected; skipping mirror replacement as sources are EOL or unavailable."; \
     fi; \
     apt-get update
 
 # 安装 Python 和 pip
-RUN apt-get install -y python3 python3-pip && \
+RUN apt-get install -y python3 python3-pip tzdata && \
     rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
@@ -68,6 +68,10 @@ RUN mkdir -p temp logs
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1
 ENV DISPLAY=:99
+ENV TZ=Asia/Shanghai
+
+RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && \
+    echo ${TZ} > /etc/timezone
 
 # 运行应用
 CMD ["python3", "rainyun.py"]

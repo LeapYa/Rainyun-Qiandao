@@ -6,15 +6,19 @@ on:
 jobs:
   checkin-test:
     runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
 
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 安装中文字体
+      - name: 安装中文字体并设置上海时区
         run: |
           sudo apt-get update
-          sudo apt-get install -y fonts-wqy-zenhei
+          sudo apt-get install -y fonts-wqy-zenhei tzdata
+          sudo ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+          echo Asia/Shanghai | sudo tee /etc/timezone > /dev/null
 
       - name: 设置 Python 3.11
         uses: actions/setup-python@v5

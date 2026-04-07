@@ -6,9 +6,58 @@ import time
 import schedule
 import sys
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_TIMEZONE = "Asia/Shanghai"
+
+
+def get_app_timezone_name():
+    """获取应用时区，默认使用上海时区。"""
+    return (os.getenv("TZ", DEFAULT_TIMEZONE) or DEFAULT_TIMEZONE).strip()
+
+
+def get_app_timezone():
+    """返回应用使用的时区对象。"""
+    tz_name = get_app_timezone_name()
+    try:
+        return ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        logger.warning(f"未找到时区 '{tz_name}'，回退为 {DEFAULT_TIMEZONE}")
+        return timezone(timedelta(hours=8), name=DEFAULT_TIMEZONE)
+
+
+APP_TIMEZONE = get_app_timezone()
+
+
+def now_local():
+    """返回应用时区下的当前时间。"""
+    return datetime.now(APP_TIMEZONE)
+
+
+def configure_process_timezone():
+    """尽量让日志、time.localtime 等也使用应用时区。"""
+    tz_name = get_app_timezone_name()
+    os.environ["TZ"] = tz_name
+    if hasattr(time, "tzset"):
+        try:
+            time.tzset()
+        except Exception as exc:
+            logger.warning(f"设置进程时区失败: {exc}")
+
+
+def apply_browser_timezone(driver):
+    """强制浏览器内 JS 时间环境使用应用时区。"""
+    tz_name = get_app_timezone_name()
+    try:
+        driver.execute_cdp_cmd("Emulation.setTimezoneOverride", {
+            "timezoneId": tz_name
+        })
+        logger.info(f"浏览器时区已设置为: {tz_name}")
+    except Exception as exc:
+        logger.warning(f"设置浏览器时区失败: {exc}")
 
 # 全局变量，用于存储Selenium模块
 selenium_modules = None
@@ -69,6 +118,8 @@ def unload_selenium_modules():
 
 def setup_logging():
     """设置日志轮转功能，自动清理7天前的日志"""
+    configure_process_timezone()
+
     # 确保日志目录存在
     log_dir = "logs"
     os.makedirs(log_dir, exist_ok=True)
@@ -975,7 +1026,7 @@ def generate_html_report(results, screenshot_mode='all'):
     :param results: 签到结果列表
     :param screenshot_mode: 截图模式 - 'all'(所有), 'failed_only'(仅失败), 'none'(无截图)
     """
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now_str = now_local().strftime('%Y-%m-%d %H:%M:%S')
     success_count = len([r for r in results if r['status']])
     total_count = len(results)
     
@@ -1115,7 +1166,7 @@ def generate_markdown_report(results, compact=False):
     :param results: 签到结果列表
     :param compact: 精简模式 - 成功账号只保留一行，失败账号保留完整信息
     """
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now_str = now_local().strftime('%Y-%m-%d %H:%M:%S')
     success_count = len([r for r in results if r['status']])
     total_count = len(results)
     
@@ -1156,7 +1207,7 @@ def generate_summary_report(results, fmt='html'):
     :param fmt: 'html' 或 'markdown'
     :return: 摘要内容字符串
     """
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now_str = now_local().strftime('%Y-%m-%d %H:%M:%S')
     success_count = len([r for r in results if r['status']])
     fail_count = len(results) - success_count
     total_count = len(results)
@@ -1248,7 +1299,7 @@ def save_screenshot(driver, account_id, status="success", error_msg=""):
         os.makedirs(screenshot_dir, exist_ok=True)
         
         # 生成截图文件名（类型_账号_时间戳）
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = now_local().strftime("%Y%m%d_%H%M%S")
         masked_account = f"{account_id[:3]}xxx{account_id[-3:] if len(account_id) > 6 else account_id}"
         
         # 先保存原始 PNG 截图
@@ -2384,7 +2435,7 @@ class TencentCaptchaProvider(CaptchaProvider):
         from datetime import datetime
 
         account_prefix = self._make_safe_name(getattr(logger_adapter, "extra", {}).get("prefix", "unknown"))
-        bundle_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]}_{stage}_r{retry_count}"
+        bundle_name = f"{now_local().strftime('%Y%m%d_%H%M%S_%f')[:-3]}_{stage}_r{retry_count}"
         bundle_dir = os.path.join("logs", "captcha_debug", account_prefix, bundle_name)
         os.makedirs(bundle_dir, exist_ok=True)
 
@@ -2408,7 +2459,7 @@ class TencentCaptchaProvider(CaptchaProvider):
             "stage": stage,
             "retry_count": retry_count,
             "account_prefix": getattr(logger_adapter, "extra", {}).get("prefix", "unknown"),
-            "captured_at": datetime.now().isoformat(timespec="seconds"),
+            "captured_at": now_local().isoformat(timespec="seconds"),
             "copied_files": copied_files,
             "extra": extra or {},
         }
@@ -3097,6 +3148,7 @@ def run_checkin(account_user=None, account_pwd=None):
         
         logger_adapter.info("初始化 Selenium（账号专属配置）")
         driver = init_selenium(current_user, proxy=proxy)
+        apply_browser_timezone(driver)
         
         # 过 Selenium 检测
         with open("stealth.min.js", mode="r") as f:
@@ -3303,7 +3355,7 @@ def run_checkin(account_user=None, account_pwd=None):
 
 def scheduled_checkin():
     """定时任务包装器"""
-    logger.info(f"定时任务触发 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"定时任务触发 - {now_local().strftime('%Y-%m-%d %H:%M:%S')}")
     success = run_all_accounts()
     
     if success:
@@ -3317,7 +3369,7 @@ def scheduled_checkin():
     
     # 手动计算下次执行时间，确保是未来时间
     schedule_time = os.getenv("SCHEDULE_TIME", "08:00")
-    current_time = datetime.now()
+    current_time = now_local()
     next_run = current_time.replace(
         hour=int(schedule_time.split(':')[0]), 
         minute=int(schedule_time.split(':')[1]), 
@@ -3384,21 +3436,22 @@ if __name__ == "__main__":
         # 定时模式
         logger.info(f"启动定时模式，每天 {schedule_time} 自动执行签到")
         logger.info("程序将持续运行，按 Ctrl+C 退出")
+        logger.info(f"当前应用时区: {get_app_timezone_name()}")
         
         # 设置每日定时任务
         schedule.every().day.at(schedule_time).do(scheduled_checkin)
         
         # 显示每日定时任务时间
-        tomorrow_schedule = datetime.now().replace(hour=int(schedule_time.split(':')[0]), 
-                                                  minute=int(schedule_time.split(':')[1]), 
-                                                  second=0, microsecond=0)
-        if tomorrow_schedule <= datetime.now():
+        tomorrow_schedule = now_local().replace(hour=int(schedule_time.split(':')[0]),
+                                               minute=int(schedule_time.split(':')[1]),
+                                               second=0, microsecond=0)
+        if tomorrow_schedule <= now_local():
             tomorrow_schedule += timedelta(days=1)
         logger.info(f"每日执行时间: {tomorrow_schedule.strftime('%Y-%m-%d %H:%M:%S')}")
         
         # 首次启动1分钟后执行一次
         logger.info("首次启动，将在1分钟后执行首次签到任务")
-        first_run_time = datetime.now() + timedelta(minutes=1)
+        first_run_time = now_local() + timedelta(minutes=1)
         logger.info(f"首次执行时间: {first_run_time.strftime('%Y-%m-%d %H:%M:%S')}")
         
         # 持续运行检查定时任务
@@ -3407,7 +3460,7 @@ if __name__ == "__main__":
         
         try:
             while True:
-                current_time = datetime.now()
+                current_time = now_local()
                 
                 # 检查是否到了首次执行时间
                 if not first_run_done and current_time >= first_run_time:
@@ -3421,7 +3474,7 @@ if __name__ == "__main__":
                     # 显示下次执行时间
                     logger.info("首次任务完成，查看下次执行安排...")
                     logger.info(f"✅ 程序将继续运行，下次执行时间: {tomorrow_schedule.strftime('%Y-%m-%d %H:%M:%S')}")
-                    time_diff = tomorrow_schedule - datetime.now()
+                    time_diff = tomorrow_schedule - now_local()
                     hours, remainder = divmod(time_diff.total_seconds(), 3600)
                     minutes, _ = divmod(remainder, 60)
                     logger.info(f"距离下次执行还有: {int(hours)}小时{int(minutes)}分钟")
