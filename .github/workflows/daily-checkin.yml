@@ -1,9 +1,9 @@
 name: 雨云每日签到
 
 on:
-  # 定时触发 - 每天北京时间 8:15 执行 (UTC 0:15) - 避开 0:00 晚高峰
+  # 定时触发 - 每天北京时间 6:45 执行 (UTC 22:45) - 提前避开高峰队列拥堵
   schedule:
-    - cron: '15 0 * * *'
+    - cron: '45 22 * * *'
   
   # 代码推送时触发 (修改此文件时立即运行，用于激活定时器)
   push:
@@ -14,6 +14,15 @@ on:
 
   # 手动触发（方便测试）
   workflow_dispatch:
+    inputs:
+      test_username:
+        description: '测试账号（留空则使用 Secrets 中的账号）'
+        required: false
+        default: ''
+      test_password:
+        description: '测试密码（留空则使用 Secrets 中的密码）'
+        required: false
+        default: ''
 
 jobs:
   checkin:
@@ -65,9 +74,9 @@ jobs:
       # 7. 执行签到
       - name: 执行签到
         env:
-          # 从 GitHub Secrets 读取账号密码
-          RAINYUN_USERNAME: ${{ secrets.RAINYUN_USERNAME }}
-          RAINYUN_PASSWORD: ${{ secrets.RAINYUN_PASSWORD }}
+          # 从 GitHub Secrets 读取账号密码（手动触发时可由 inputs 覆盖，用于测试）
+          RAINYUN_USERNAME: ${{ github.event.inputs.test_username || secrets.RAINYUN_USERNAME }}
+          RAINYUN_PASSWORD: ${{ github.event.inputs.test_password || secrets.RAINYUN_PASSWORD }}
           # 可选：通知配置
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}

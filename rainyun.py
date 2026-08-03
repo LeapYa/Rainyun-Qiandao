@@ -11,6 +11,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
+# GitHub Actions 环境检测（Actions 海外 IP 会被雨云拒绝连接，需自动走国内代理）
+_IN_ACTIONS = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 
 
@@ -75,6 +78,7 @@ def import_selenium_modules():
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.support.wait import WebDriverWait
         from selenium.common import TimeoutException
+        from selenium.common.exceptions import WebDriverException
         
         selenium_modules = {
             'webdriver': webdriver,
@@ -85,7 +89,8 @@ def import_selenium_modules():
             'By': By,
             'EC': EC,
             'WebDriverWait': WebDriverWait,
-            'TimeoutException': TimeoutException
+            'TimeoutException': TimeoutException,
+            'WebDriverException': WebDriverException
         }
     return selenium_modules
 
@@ -256,7 +261,7 @@ class PushPlusProvider(NotificationProvider):
         }
         try:
             logging.info(f"Sending PushPlus notification: {title} ({len(content.encode('utf-8'))} bytes)")
-            response = requests.post(url, json=data, timeout=10)
+            response = requests.post(url, json=data, timeout=30)
             result = response.json()
             if result.get('code') == 200:
                 logging.info("PushPlus notification sent successfully")
@@ -305,7 +310,7 @@ class WXPusherProvider(NotificationProvider):
                 target_desc += (" & " if target_desc else "") + f"Topics: {len(self.topic_ids)}"
                 
             logging.info(f"Sending WXPusher notification to {target_desc}: {title} ({len(content.encode('utf-8'))} bytes)")
-            response = requests.post(url, json=data, timeout=10)
+            response = requests.post(url, json=data, timeout=30)
             result = response.json()
             if result.get('code') == 1000: # WXPusher success code is 1000
                 logging.info("WXPusher notification sent successfully")
@@ -362,7 +367,7 @@ class DingTalkProvider(NotificationProvider):
         
         try:
             logging.info(f"Sending DingTalk notification: {title} ({len(md_text.encode('utf-8'))} bytes)")
-            response = requests.post(url, params=params, json=data, timeout=10)
+            response = requests.post(url, params=params, json=data, timeout=30)
             result = response.json()
             if result.get('errcode') == 0:
                 logging.info("DingTalk notification sent successfully")
@@ -938,45 +943,149 @@ def parse_proxy_response(response_text):
     return None
 
 
-def validate_proxy(proxy, timeout=10):
+def check_rainyun_blocked(timeout=8):
     """
-    测试代理是否可用
+    检测当前网络环境是否被雨云拦截（海外 IP 无法访问 app.rainyun.com）。
+    直连请求 app.rainyun.com，连接失败或超时则认为被拦截。
+    :param timeout: 请求超时时间（秒）
+    :return: True 表示被拦截（需要代理），False 表示可直连
+    """
+    import requests
+    try:
+        resp = requests.get("https://app.rainyun.com/", timeout=timeout, allow_redirects=False)
+        if resp.status_code in (200, 301, 302):
+            return False
+        logger.warning(f"直连 app.rainyun.com 返回异常状态码 {resp.status_code}，疑似被拦截")
+        return True
+    except requests.Timeout:
+        logger.warning("直连 app.rainyun.com 超时，疑似海外 IP 被拦截")
+        return True
+    except Exception as e:
+        logger.warning(f"直连 app.rainyun.com 失败: {e}，疑似海外 IP 被拦截")
+        return True
+
+
+def validate_proxy(proxy, timeout=5, max_response_time=3):
+    """
+    测试代理是否可用且响应足够快。
+    仅能连通不够——浏览器会话需要加载多个资源，慢代理会导致页面加载不完整、
+    Cookie 无法正确送达服务器，进而被误判为"Cookie 失效"。
     :param proxy: 代理地址，格式为 ip:port
-    :param timeout: 超时时间（秒）
+    :param timeout: 请求超时时间（秒）
+    :param max_response_time: 最大允许响应时间（秒），超过则认为代理过慢
     :return: True 可用，False 不可用
     """
     import requests
-    
+
     if not proxy:
         return False
-    
+
     try:
         test_proxies = {
             "http": f"http://{proxy}",
             "https": f"http://{proxy}"
         }
-        
-        # 使用雨云网站测试代理连通性（更贴近实际使用场景）
+
+        # 使用 app.rainyun.com 测试代理连通性（这是实际被海外 IP 拦截的目标域名）
         logger.info(f"正在验证代理 {proxy} 的可用性...")
+        start_time = time.time()
         response = requests.get(
-            "https://www.rainyun.com",
+            "https://app.rainyun.com/",
             proxies=test_proxies,
             timeout=timeout
         )
-        
+        elapsed = time.time() - start_time
+
         if response.status_code == 200:
-            logger.info(f"代理 {proxy} 验证成功")
+            if elapsed > max_response_time:
+                logger.warning(f"代理 {proxy} 响应过慢（{elapsed:.1f}s > {max_response_time}s），放弃使用")
+                return False
+            logger.info(f"代理 {proxy} 验证成功（响应时间 {elapsed:.1f}s）")
             return True
         else:
             logger.warning(f"代理验证失败，状态码: {response.status_code}")
             return False
-            
+
     except requests.Timeout:
         logger.warning(f"代理 {proxy} 验证超时")
         return False
     except Exception as e:
         logger.warning(f"代理 {proxy} 验证失败: {e}")
         return False
+
+
+def get_freeproxy_ip():
+    """
+    使用改进版 freeproxy 抓取国内免费代理，以 app.rainyun.com 为探针并发验证，
+    找到可用代理即停止。仅用于 Actions 海外环境绕过 IP 拦截。
+    :return: 代理地址字符串 "ip:port"，无可用代理时返回 None
+    """
+    try:
+        from freeproxy.freeproxy import ProxiedSessionClient
+    except ImportError:
+        logger.error("未安装代理库 freeproxy，请运行 pip install -r requirements.txt")
+        return None
+
+    try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except Exception:
+        pass
+
+    # 代理源：仅用免浏览器抓取的国内源
+    proxy_sources = [
+        "KuaidailiProxiedSession", "QiyunipProxiedSession", "KxdailiProxiedSession",
+        "IP89ProxiedSession", "TheSpeedXProxiedSession", "ProxyScrapeProxiedSession",
+    ]
+
+    logger.info("正在抓取国内免费代理（以 app.rainyun.com 为探针，找到即停）...")
+
+    try:
+        client = ProxiedSessionClient(
+            proxy_sources=proxy_sources,
+            init_proxied_session_cfg={
+                "max_pages": 2,
+                "filter_rule": {"country_code": ["CN"], "protocol": ["http", "https"]},
+            },
+            disable_print=True,
+            lazy=True,  # 不在构造阶段抓取，交给 fetch_working_streaming 边抓边验、命中即停
+        )
+
+        def _is_valid(resp):
+            # 能拿到 200 响应且响应够快，才证明代理可用于浏览器会话。
+            # 慢代理（>3s）会导致页面加载不完整、Cookie 无法送达，被误判为"Cookie 失效"。
+            try:
+                if resp.status_code != 200:
+                    return False
+                if resp.elapsed.total_seconds() > 3:
+                    return False
+                return True
+            except Exception:
+                return False
+
+        working = client.fetch_working_streaming(
+            test_url="https://app.rainyun.com/",
+            need=1,
+            source_timeout=15,
+            validate_timeout=5,
+            validate_workers=64,
+            method="GET",
+            is_valid=_is_valid,
+        )
+    except Exception as e:
+        logger.error(f"抓取国内代理失败: {e}")
+        return None
+
+    if not working:
+        logger.warning("未找到可用的国内代理")
+        return None
+
+    # fetch_working_streaming 返回 requests 格式字典，提取 ip:port 给 Selenium 使用
+    proxy_dict = working[0]
+    proxy_url = proxy_dict.get("http") or proxy_dict.get("https") or ""
+    proxy_str = proxy_url.replace("http://", "").replace("https://", "").strip("/")
+    logger.info(f"获取到可用国内代理: {proxy_str}")
+    return proxy_str if proxy_str else None
 
 
 # SVG图标
@@ -1302,8 +1411,8 @@ def save_screenshot(driver, account_id, status="success", error_msg=""):
         timestamp = now_local().strftime("%Y%m%d_%H%M%S")
         masked_account = f"{account_id[:3]}xxx{account_id[-3:] if len(account_id) > 6 else account_id}"
         
-        # 先保存原始 PNG 截图
-        temp_filepath = os.path.join(screenshot_dir, f"temp_{timestamp}.png")
+        # 先保存原始 PNG 截图（文件名带账号，避免多账号同秒截图时互相覆盖）
+        temp_filepath = os.path.join(screenshot_dir, f"temp_{masked_account}_{timestamp}.png")
         if not driver.save_screenshot(temp_filepath):
             logger.error(f"无法保存截图到: {temp_filepath}")
             return None
@@ -1320,13 +1429,12 @@ def save_screenshot(driver, account_id, status="success", error_msg=""):
         original_size = os.path.getsize(temp_filepath)
         compressed_size = compress_screenshot(temp_filepath, compressed_filepath)
         
-        # 删除临时 PNG 文件
-        try:
-            os.remove(temp_filepath)
-        except:
-            pass
-        
         if compressed_size:
+            # 压缩成功后才删除临时 PNG 文件
+            try:
+                os.remove(temp_filepath)
+            except:
+                pass
             compression_ratio = (1 - compressed_size / original_size) * 100
             status_text = "成功" if status == "success" else "失败"
             logger.info(f"已保存{status_text}截图: {compressed_filepath} (压缩率: {compression_ratio:.1f}%, {original_size/1024:.1f}KB -> {compressed_size/1024:.1f}KB)")
@@ -1336,9 +1444,13 @@ def save_screenshot(driver, account_id, status="success", error_msg=""):
             
             return compressed_filepath
         else:
-            # 压缩失败，使用原始文件
-            logger.warning("截图压缩失败，使用原始文件")
-            return temp_filepath
+            # 压缩失败：删除临时文件，返回 None（不回退原始 PNG，避免邮件体积过大）
+            logger.error(f"截图压缩失败，放弃截图（原始 PNG {original_size/1024:.1f}KB 过大，不回退）")
+            try:
+                os.remove(temp_filepath)
+            except:
+                pass
+            return None
             
     except Exception as e:
         logger.error(f"保存截图时出错: {e}")
@@ -1527,8 +1639,18 @@ def run_all_accounts():
                 account_idx = results[username]['index']
                 retry_info = f"（第 {results[username]['retry_count'] + 1} 次尝试）" if results[username]['retry_count'] > 0 else ""
                 logger.info(f"========== 启动账号 {account_idx}/{len(accounts)} {retry_info} ==========")
-                
-                future = executor.submit(run_checkin, username, password)
+
+                # 重试时复用上次代理，避免换 IP 导致 Cookie 失效。
+                # 但如果上次失败是代理问题（proxy_failed），则不复用——慢代理通过了 validate_proxy
+                # 却无法支撑浏览器会话，复用只会重复同样的失败。
+                reuse_proxy = None
+                if results[username]['result'] and results[username]['result'].get('proxy'):
+                    if not results[username]['result'].get('proxy_failed'):
+                        reuse_proxy = results[username]['result']['proxy']
+                    else:
+                        logger.info(f"上次失败由代理引起，不复用旧代理，重新抓取")
+
+                future = executor.submit(run_checkin, username, password, reuse_proxy)
                 future_to_account[future] = username
 
             # 获取结果
@@ -1716,12 +1838,17 @@ def init_selenium(account_id: str, proxy: str = None):
             logger.info("使用 Selenium Manager 自动管理 ChromeDriver")
             service = Service()
         
-        return webdriver.Chrome(service=service, options=ops)
+        driver = webdriver.Chrome(service=service, options=ops)
+        # 限制页面加载时间：慢代理下防止 driver.get() 无限阻塞
+        driver.set_page_load_timeout(30)
+        return driver
     else:
         # Windows 环境
         # 使用 Selenium Manager 自动处理驱动下载和路径匹配
         service = Service()
-        return webdriver.Chrome(service=service, options=ops)
+        driver = webdriver.Chrome(service=service, options=ops)
+        driver.set_page_load_timeout(30)
+        return driver
 
 
 def download_image(url, filename, user_agent=None):
@@ -3094,11 +3221,20 @@ def load_cookies(driver, account_id):
         logger.info(f"已加载本地 Cookie")
         return True
     except Exception as e:
+        # 代理异常（ERR_PROXY_CONNECTION_FAILED、ERR_CONNECTION_RESET、renderer 超时等）
+        # 会抛 WebDriverException，需要向上传播以便调用方区分"代理失败"和"Cookie 文件缺失"
+        error_msg = str(e)
+        if any(kw in error_msg for kw in (
+            "ERR_PROXY", "ERR_INTERNET_DISCONNECTED", "ERR_NAME_NOT_RESOLVED",
+            "ERR_CONNECTION", "ERR_TIMED_OUT", "Timed out receiving message from renderer"
+        )):
+            logger.warning(f"加载 Cookie 时代理连接失败: {e}")
+            raise
         logger.warning(f"加载 Cookie 失败: {e}")
         return False
 
 
-def run_checkin(account_user=None, account_pwd=None):
+def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
     """执行签到任务"""
     # 导入Selenium模块
     modules = import_selenium_modules()
@@ -3111,6 +3247,7 @@ def run_checkin(account_user=None, account_pwd=None):
     EC = modules['EC']
     WebDriverWait = modules['WebDriverWait']
     TimeoutException = modules['TimeoutException']
+    WebDriverException = modules['WebDriverException']
     import subprocess
     
     current_user = account_user or user
@@ -3128,13 +3265,14 @@ def run_checkin(account_user=None, account_pwd=None):
     # 使用 Adapter 替换原有的 logger
     logger_adapter = PrefixAdapter(logger, {'prefix': masked_user})
     
+    proxy = None  # 提前初始化，确保异常处理中可安全引用
     try:
         logger_adapter.info(f"开始执行签到任务...")
         
         # 获取代理IP（每个账号单独获取）
-        proxy = None
         proxy_api_url = os.getenv("PROXY_API_URL", "").strip()
         if proxy_api_url:
+            # 优先使用配置的代理接口（付费/自建）
             proxy = get_proxy_ip()
             if proxy:
                 # 验证代理可用性
@@ -3145,6 +3283,25 @@ def run_checkin(account_user=None, account_pwd=None):
                     proxy = None
             else:
                 logger_adapter.warning("获取代理失败，将使用本地IP继续")
+        elif _IN_ACTIONS or check_rainyun_blocked():
+            # 海外 IP 会被雨云拒绝连接（浏览器显示 This site can't be reached），
+            # 自动抓取国内免费代理绕过拦截。
+            # 覆盖 GitHub Actions、海外 VPS、Docker 等所有海外环境。
+            # 重试时优先复用上次的代理：换 IP 会导致服务器 Cookie 失效，
+            # 进而被迫走密码登录，而慢代理下密码登录容易超时失败。
+            if reuse_proxy:
+                if validate_proxy(reuse_proxy):
+                    proxy = reuse_proxy
+                    logger_adapter.info(f"复用上次代理: {proxy}（避免换 IP 导致 Cookie 失效）")
+                else:
+                    logger_adapter.warning(f"上次代理 {reuse_proxy} 已失效，重新抓取国内代理")
+                    proxy = get_freeproxy_ip()
+            else:
+                proxy = get_freeproxy_ip()
+            if proxy:
+                logger_adapter.info(f"国内代理 {proxy} 已就绪，用于绕过海外 IP 拦截")
+            else:
+                logger_adapter.warning("未获取到可用国内代理，直连可能被拒绝连接")
         
         logger_adapter.info("初始化 Selenium（账号专属配置）")
         driver = init_selenium(current_user, proxy=proxy)
@@ -3167,13 +3324,41 @@ def run_checkin(account_user=None, account_pwd=None):
         wait = WebDriverWait(driver, timeout)
         
         # 加载 Cookie 并直接跳转积分页
-        load_cookies(driver, current_user)
-        logger_adapter.info("正在跳转积分页...")
-        driver.get("https://app.rainyun.com/account/reward/earn")
-        time.sleep(3)
+        # 慢代理或断连会导致 driver.get() 抛 WebDriverException（ERR_PROXY_CONNECTION_FAILED 等），
+        # 需要捕获并标记为代理失败，让重试机制换新代理而非复用旧代理。
+        proxy_failed = False
+        try:
+            load_cookies(driver, current_user)
+            logger_adapter.info("正在跳转积分页...")
+            driver.get("https://app.rainyun.com/account/reward/earn")
+            time.sleep(3)
+        except WebDriverException as e:
+            error_msg = str(e)
+            if any(kw in error_msg for kw in ("ERR_PROXY", "ERR_INTERNET_DISCONNECTED", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT", "ERR_CONNECTION", "Timed out receiving message from renderer")):
+                logger_adapter.error(f"代理连接失败，页面无法加载: {error_msg[:200]}")
+                screenshot_path = save_screenshot(driver, current_user, status="failure")
+                return {
+                    'status': False, 'msg': '代理连接失败，页面无法加载', 'points': 0,
+                    'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+                    'retries': retry_stats['count'], 'screenshot': screenshot_path,
+                    'proxy': proxy, 'proxy_failed': True
+                }
+            raise
         
         # 检查是否需要密码登录
         if "/auth/login" in driver.current_url:
+            # 慢代理下页面可能加载不完整就被重定向到 /auth/login，
+            # 需要确认登录表单是否真正渲染——如果页面源码过短说明页面没加载完，是代理问题。
+            page_src = driver.page_source or ""
+            if len(page_src) < 500:
+                logger_adapter.error(f"页面加载不完整（源码仅 {len(page_src)} 字符），疑似代理过慢")
+                screenshot_path = save_screenshot(driver, current_user, status="failure")
+                return {
+                    'status': False, 'msg': '代理过慢导致页面加载不完整', 'points': 0,
+                    'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+                    'retries': retry_stats['count'], 'screenshot': screenshot_path,
+                    'proxy': proxy, 'proxy_failed': True
+                }
             logger_adapter.info("Cookie 已失效，使用账号密码登录")
             
             try:
@@ -3185,42 +3370,123 @@ def run_checkin(account_user=None, account_pwd=None):
                 password.send_keys(current_pwd)
                 login_button.click()
             except TimeoutException:
-                logger_adapter.error("页面加载超时")
+                # 登录表单元素超时未找到：通常是代理太慢导致 JS bundle 没下载完，页面没渲染
+                logger_adapter.error("登录表单加载超时，疑似代理过慢导致页面未渲染完成")
                 screenshot_path = save_screenshot(driver, current_user, status="failure")
                 return {
-                    'status': False, 'msg': '页面加载超时', 'points': 0,
+                    'status': False, 'msg': '代理过慢导致登录表单加载超时', 'points': 0,
                     'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
-                    'retries': retry_stats['count'], 'screenshot': screenshot_path
+                    'retries': retry_stats['count'], 'screenshot': screenshot_path,
+                    'proxy': proxy, 'proxy_failed': True
                 }
             
-            # 处理登录验证码
-            try:
-                login_captcha = wait.until(EC.visibility_of_element_located((By.ID, 'tcaptcha_iframe_dy')))
-                logger_adapter.warning("触发验证码！")
-                driver.switch_to.frame("tcaptcha_iframe_dy")
-                captcha_provider = CaptchaFactory.create_provider("tencent")
-                captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
-            except TimeoutException:
+            # 处理登录验证码：同时检测验证码 iframe、URL 跳转和 toast 错误提示
+            # 密码错误时 API 快速返回 400 → 页面弹出 Vue-Toastification toast（仅存在约5秒）
+            # 必须在验证码等待期间同时轮询 toast，否则等验证码超时后 toast 早已消失
+            # toast xpath: /html/body/div[4]/div[2]/div/div/div[1]/div/div/div/div/small
+            TOAST_ERROR_XPATH = '/html/body/div[4]/div[2]/div/div/div[1]/div/div/div/div/small'
+            _login_error_keywords = ("密码错误", "账号不存在", "用户名或密码", "登录失败",
+                                     "账户或密码", "账号或密码", "验证失败")
+            _captcha_deadline = time.time() + 30
+            captcha_handled = False
+            while time.time() < _captcha_deadline:
+                # 检测 URL 跳转（登录成功，无需验证码）
+                if "/dashboard" in driver.current_url or "/account" in driver.current_url:
+                    break
+                # 检测 toast 错误提示（密码错误时快速出现，5秒后消失）
+                try:
+                    toast_elems = driver.find_elements(By.XPATH, TOAST_ERROR_XPATH)
+                    for el in toast_elems:
+                        toast_text = el.text or ""
+                        if any(kw in toast_text for kw in _login_error_keywords):
+                            fail_reason = f"账号或密码错误（{toast_text}），请检查环境变量/GitHub Secrets 中的 RAINYUN_USERNAME / RAINYUN_PASSWORD"
+                            logger_adapter.error(f"登录失败: {fail_reason}")
+                            screenshot_path = save_screenshot(driver, current_user, status="failure")
+                            return {
+                                'status': False, 'msg': fail_reason, 'points': 0,
+                                'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+                                'retries': retry_stats['count'], 'screenshot': screenshot_path,
+                                'proxy': proxy, 'proxy_failed': False
+                            }
+                except Exception:
+                    pass
+                # 检测验证码 iframe
+                try:
+                    captcha_elems = driver.find_elements(By.ID, 'tcaptcha_iframe_dy')
+                    if captcha_elems and captcha_elems[0].is_displayed():
+                        logger_adapter.warning("触发验证码！")
+                        driver.switch_to.frame("tcaptcha_iframe_dy")
+                        captcha_provider = CaptchaFactory.create_provider("tencent")
+                        captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
+                        captcha_handled = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+            if not captcha_handled:
                 logger_adapter.info("未触发验证码")
-            
-            time.sleep(5)
+
             driver.switch_to.default_content()
             dismiss_modal_confirm(driver, timeout)
-            
-            # 验证登录结果
-            if "/dashboard" in driver.current_url or "/account" in driver.current_url:
-                logger_adapter.info("登录成功！")
-                save_cookies(driver, current_user)
-                # 跳转到积分页
-                driver.get("https://app.rainyun.com/account/reward/earn")
-                time.sleep(2)
-            else:
-                logger_adapter.error(f"登录失败，当前页面: {driver.current_url}")
+
+            # 等待登录结果：轮询同时检测 URL 跳转（成功）和 toast 错误提示（密码错误）
+            # 验证码处理完成后，登录请求可能仍在进行中，继续轮询30秒
+            def _check_login_result(d):
+                """返回 'success' / ('error', msg) / None（继续等待）"""
+                if "/dashboard" in d.current_url or "/account" in d.current_url:
+                    return "success"
+                try:
+                    toast_elems = d.find_elements(By.XPATH, TOAST_ERROR_XPATH)
+                    for el in toast_elems:
+                        toast_text = el.text or ""
+                        if any(kw in toast_text for kw in _login_error_keywords):
+                            return ("error", toast_text)
+                except Exception:
+                    pass
+                return None
+
+            try:
+                login_outcome = WebDriverWait(driver, 30).until(_check_login_result)
+                if login_outcome == "success":
+                    logger_adapter.info("登录成功！")
+                    save_cookies(driver, current_user)
+                    driver.get("https://app.rainyun.com/account/reward/earn")
+                    time.sleep(2)
+                else:
+                    # 页面显示了 toast 错误提示 → 账号密码错误，非代理问题
+                    toast_msg = login_outcome[1] if isinstance(login_outcome, tuple) else ""
+                    fail_reason = f"账号或密码错误（{toast_msg}），请检查环境变量/GitHub Secrets 中的 RAINYUN_USERNAME / RAINYUN_PASSWORD"
+                    logger_adapter.error(f"登录失败: {fail_reason}")
+                    screenshot_path = save_screenshot(driver, current_user, status="failure")
+                    return {
+                        'status': False, 'msg': fail_reason, 'points': 0,
+                        'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
+                        'retries': retry_stats['count'], 'screenshot': screenshot_path,
+                        'proxy': proxy, 'proxy_failed': False
+                    }
+            except TimeoutException:
+                # 30秒内既没有跳转也没有 toast 错误 → 登录请求未完成 → 代理过慢
+                if "/auth/login" in driver.current_url:
+                    if current_user in ("username", "") or current_pwd in ("password", ""):
+                        fail_reason = "未配置雨云账号密码（请检查环境变量/GitHub Secrets: RAINYUN_USERNAME / RAINYUN_PASSWORD）"
+                        is_proxy_fail = False
+                    elif proxy:
+                        fail_reason = "代理过慢导致登录超时（30秒内无跳转且无错误提示），已标记代理失败将换新代理重试"
+                        is_proxy_fail = True
+                    else:
+                        fail_reason = "登录超时（30秒内无跳转且无错误提示），请检查网络或账号密码"
+                        is_proxy_fail = False
+                else:
+                    fail_reason = f"登录后跳转异常（当前页面: {driver.current_url}）"
+                    is_proxy_fail = False
+                logger_adapter.error(f"登录失败: {fail_reason}")
                 screenshot_path = save_screenshot(driver, current_user, status="failure")
                 return {
-                    'status': False, 'msg': '登录失败', 'points': 0,
+                    'status': False, 'msg': fail_reason, 'points': 0,
                     'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
-                    'retries': retry_stats['count'], 'screenshot': screenshot_path
+                    'retries': retry_stats['count'], 'screenshot': screenshot_path,
+                    'proxy': proxy, 'proxy_failed': is_proxy_fail
                 }
         else:
             logger_adapter.info("Cookie 有效，免密登录成功！🎉")
@@ -3234,15 +3500,24 @@ def run_checkin(account_user=None, account_pwd=None):
         dismiss_modal_confirm(driver, timeout)
         dismiss_modal_confirm(driver, timeout)
         
-        earn = driver.find_element(By.XPATH,
-                                   '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div/div[1]/div/div[1]/div/span[2]/a')
+        # 每日签到按钮 xpath：通过父级 span[1] 文字"每日签到"精确定位，
+        # 避免误匹配"关注雨云"旁边同样显示"领取奖励"的按钮。
+        # 注意：末尾用 span[2] 而非 span[2]/a —— 签到完成后按钮变为"已完成"，
+        # 此时 span[2] 下没有 <a> 子元素，带 /a 会抛 NoSuchElementException。
+        CHECKIN_BTN_XPATH = '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div//div/div[1]/div[span[1][normalize-space(text())="每日签到"]]/span[2]'
+        earn = driver.find_element(By.XPATH, CHECKIN_BTN_XPATH)
         btn_text = earn.text.strip()
         logger_adapter.info(f"签到按钮文字: [{btn_text}]")
-        
+
         # 只有"领取奖励"才需要点击，其他情况视为已完成
         if btn_text == "领取奖励":
             logger_adapter.info("点击领取奖励")
-            earn.click()
+            # 优先点击 span 内的 <a> 链接，无 <a> 时点击 span 本身
+            links = earn.find_elements(By.XPATH, "./a")
+            if links:
+                links[0].click()
+            else:
+                earn.click()
             state = wait_captcha_or_modal(driver, timeout)
             if state == "captcha":
                 logger_adapter.info("处理验证码")
@@ -3256,6 +3531,46 @@ def run_checkin(account_user=None, account_pwd=None):
                 driver.implicitly_wait(5)
             else:
                 logger_adapter.info("未触发验证码")
+            
+            # 轮询等待按钮变为"已完成"：点击后可能因网络问题导致验证码弹窗（t_verify 三个点加载框）
+            # 迟迟未加载出 tcaptcha_iframe，wait_captcha_or_modal 误判为"未触发验证码"。
+            # 此时按钮仍为"领取奖励"，需检测 t_verify 加载框并等待真正的验证码弹窗出现后处理。
+            poll_deadline = time.time() + 60
+            while time.time() < poll_deadline:
+                time.sleep(3)
+                try:
+                    earn = driver.find_element(By.XPATH, CHECKIN_BTN_XPATH)
+                    btn_text = earn.text.strip()
+                except Exception:
+                    btn_text = ""
+
+                if btn_text == "已完成":
+                    logger_adapter.info("按钮已变为「已完成」，签到确认成功")
+                    break
+                if btn_text != "领取奖励":
+                    logger_adapter.info(f"按钮显示「{btn_text}」，视为签到已完成")
+                    break
+
+                # 按钮仍为"领取奖励"：检查验证码加载框（三个点）是否在加载
+                t_verify_elems = driver.find_elements(By.CSS_SELECTOR, "div#t_verify")
+                if t_verify_elems:
+                    logger_adapter.info("检测到验证码加载框（三个点）仍在加载，等待验证码弹窗出现...")
+                    try:
+                        captcha_iframe = wait.until(EC.visibility_of_element_located(
+                            (By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
+                        driver.switch_to.frame(captcha_iframe)
+                        captcha_provider = CaptchaFactory.create_provider("tencent")
+                        captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
+                    except TimeoutException:
+                        logger_adapter.warning("等待验证码弹窗超时，验证码可能已消失")
+                    finally:
+                        driver.switch_to.default_content()
+                    driver.implicitly_wait(5)
+                    logger_adapter.info("验证码处理完成，继续检查签到状态")
+                else:
+                    logger_adapter.warning("按钮仍为「领取奖励」且无验证码加载框，继续等待...")
+            else:
+                logger_adapter.warning("轮询等待签到完成超时（60秒），继续后续流程")
         else:
             logger_adapter.info(f"今日已签到（按钮显示: {btn_text}）")
 
@@ -3276,10 +3591,20 @@ def run_checkin(account_user=None, account_pwd=None):
             'points': current_points,
             'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
             'retries': retry_stats['count'],
-            'screenshot': screenshot_path
+            'screenshot': screenshot_path,
+            'proxy': proxy
         }
             
     except Exception as e:
+        error_msg = str(e)
+        # 判断异常是否由代理引起（ERR_PROXY_CONNECTION_FAILED、renderer 超时等）
+        is_proxy_error = any(kw in error_msg for kw in (
+            "ERR_PROXY", "ERR_INTERNET_DISCONNECTED", "ERR_NAME_NOT_RESOLVED",
+            "ERR_TIMED_OUT", "ERR_CONNECTION", "Timed out receiving message from renderer"
+        ))
+        # 代理环境下，元素找不到通常是代理过慢导致页面 JS 未完整渲染
+        if proxy and not is_proxy_error and "no such element" in error_msg.lower():
+            is_proxy_error = True
         logger_adapter.error(f"签到任务执行失败: {e}")
         import traceback
         logger_adapter.error(f"详细错误信息: {traceback.format_exc()}")
@@ -3293,7 +3618,9 @@ def run_checkin(account_user=None, account_pwd=None):
             'points': 0,
             'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
             'retries': retry_stats['count'],
-            'screenshot': screenshot_path
+            'screenshot': screenshot_path,
+            'proxy': proxy,
+            'proxy_failed': is_proxy_error
         }
     finally:
         # 确保在任何情况下都关闭 WebDriver
@@ -3408,7 +3735,7 @@ if __name__ == "__main__":
 
     # 初始化日志（使用新的日志轮转功能）
     logger = setup_logging()
-    ver = "2.2-docker-notify-pp"
+    ver = "2.3"
     logger.info("===================================================================")
     logger.info(f"🌧️ Rainyun-Qiandao v{ver} (Selenium)")
     logger.info("👨‍💻 Based on original project by: SerendipityR-2022")
@@ -3495,3 +3822,4 @@ if __name__ == "__main__":
             logger.info("程序执行完成")
         else:
             logger.error("程序执行失败")
+            sys.exit(1)

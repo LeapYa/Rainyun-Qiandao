@@ -2,6 +2,15 @@ name: 雨云测试账号签到
 
 on:
   workflow_dispatch:
+    inputs:
+      test_username:
+        description: '测试账号（留空则使用 Secrets 中的测试账号）'
+        required: false
+        default: ''
+      test_password:
+        description: '测试密码（留空则使用 Secrets 中的测试密码）'
+        required: false
+        default: ''
 
 jobs:
   checkin-test:
@@ -46,8 +55,8 @@ jobs:
 
       - name: 执行测试签到
         env:
-          RAINYUN_USERNAME: ${{ secrets.RAINYUN_TEST_USERNAME }}
-          RAINYUN_PASSWORD: ${{ secrets.RAINYUN_TEST_PASSWORD }}
+          RAINYUN_USERNAME: ${{ github.event.inputs.test_username || secrets.RAINYUN_TEST_USERNAME }}
+          RAINYUN_PASSWORD: ${{ github.event.inputs.test_password || secrets.RAINYUN_TEST_PASSWORD }}
           RUN_MODE: 'once'
           DEBUG: 'false'
           MAX_DELAY: '1'
