@@ -30,6 +30,7 @@
 > **GitHub Actions 配置教程**：[https://www.leapya.com/article/2](https://www.leapya.com/article/2) —— Fork 后配置 Secrets 即可每日自动签到，无需服务器。
 >
 > 下方文档主要针对 Docker / 宝塔面板等自建部署方式。
+> 青龙面板部署方式独立于下方步骤，请见 [青龙面板部署教程](https://www.leapya.com/article/22)。
 
 ### 1.拉取项目
 
