@@ -3407,10 +3407,11 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_pr
             try:
                 username = wait.until(EC.visibility_of_element_located((By.NAME, 'login-field')))
                 password = wait.until(EC.visibility_of_element_located((By.NAME, 'login-password')))
-                login_button = wait.until(EC.visibility_of_element_located((By.XPATH,
-                    '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
                 username.send_keys(current_user)
                 password.send_keys(current_pwd)
+                # 填充账号密码可能触发 Vue 重渲染，按钮在填完后重新获取，避免引用失效
+                login_button = wait.until(EC.element_to_be_clickable((By.XPATH,
+                    '//*[@id="app"]/div[1]/div[1]/div/div[2]/fade/div/div/span/form/button')))
                 login_button.click()
             except TimeoutException:
                 # 登录表单元素超时未找到：通常是代理太慢导致 JS bundle 没下载完，页面没渲染
