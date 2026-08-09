@@ -3225,6 +3225,26 @@ def save_cookies(driver, account_id):
         logger.warning(f"保存 Cookie 失败: {e}")
 
 
+def diagnose_page_load_failure(driver, proxy=None):
+    """页面加载超时时记录诊断信息，便于区分网络波动/服务端慢/页面资源卡住"""
+    # 浏览器状态：看 driver 卡在哪一步
+    try:
+        cur_url = driver.current_url or "(空)"
+        title = driver.title or "(空)"
+        ready_state = driver.execute_script("return document.readyState") or "unknown"
+        page_len = len(driver.page_source or "")
+        logger.warning(f"[诊断] 浏览器状态: URL={cur_url}, title={title}, readyState={ready_state}, page_source={page_len} 字符")
+    except Exception as diag_e:
+        logger.warning(f"[诊断] 无法获取浏览器状态: {diag_e}")
+    # 服务端连通性：走相同代理探测，看雨云是否可达、多快响应
+    try:
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        r = requests.get("https://app.rainyun.com/", timeout=8, allow_redirects=False, proxies=proxies)
+        logger.warning(f"[诊断] 服务端探测: GET app.rainyun.com → {r.status_code}, 耗时 {r.elapsed.total_seconds():.2f}s")
+    except Exception as diag_e:
+        logger.warning(f"[诊断] 服务端探测失败: {str(diag_e)[:200]}")
+
+
 def load_cookies(driver, account_id):
     """加载账号 Cookie 到浏览器，返回是否成功加载"""
     import json
@@ -3378,7 +3398,8 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_pr
         except WebDriverException as e:
             error_msg = str(e)
             if any(kw in error_msg for kw in ("ERR_PROXY", "ERR_INTERNET_DISCONNECTED", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT", "ERR_CONNECTION", "Timed out receiving message from renderer")):
-                # 直连场景下 renderer 超时是 Actions runner 性能波动，不是代理问题，不应判为 proxy_failed
+                # 直连场景下页面加载超时通常是网络波动或服务端响应慢，不是代理问题，不应判为 proxy_failed
+                diagnose_page_load_failure(driver, proxy)
                 is_proxy_issue = proxy is not None
                 failure_label = "代理连接失败" if is_proxy_issue else "页面连接超时"
                 logger_adapter.error(f"{failure_label}，页面无法加载: {error_msg[:200]}")
