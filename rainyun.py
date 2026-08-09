@@ -3267,7 +3267,7 @@ def load_cookies(driver, account_id):
             "ERR_PROXY", "ERR_INTERNET_DISCONNECTED", "ERR_NAME_NOT_RESOLVED",
             "ERR_CONNECTION", "ERR_TIMED_OUT", "Timed out receiving message from renderer"
         )):
-            logger.warning(f"加载 Cookie 时代理连接失败: {e}")
+            logger.warning(f"加载 Cookie 时页面连接失败: {e}")
             raise
         logger.warning(f"加载 Cookie 失败: {e}")
         return False
@@ -3378,13 +3378,16 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_pr
         except WebDriverException as e:
             error_msg = str(e)
             if any(kw in error_msg for kw in ("ERR_PROXY", "ERR_INTERNET_DISCONNECTED", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT", "ERR_CONNECTION", "Timed out receiving message from renderer")):
-                logger_adapter.error(f"代理连接失败，页面无法加载: {error_msg[:200]}")
+                # 直连场景下 renderer 超时是 Actions runner 性能波动，不是代理问题，不应判为 proxy_failed
+                is_proxy_issue = proxy is not None
+                failure_label = "代理连接失败" if is_proxy_issue else "页面连接超时"
+                logger_adapter.error(f"{failure_label}，页面无法加载: {error_msg[:200]}")
                 screenshot_path = save_screenshot(driver, current_user, status="failure")
                 return {
-                    'status': False, 'msg': '代理连接失败，页面无法加载', 'points': 0,
+                    'status': False, 'msg': f'{failure_label}，页面无法加载', 'points': 0,
                     'username': f"{current_user[:3]}***{current_user[-3:] if len(current_user) > 6 else current_user}",
                     'retries': retry_stats['count'], 'screenshot': screenshot_path,
-                    'proxy': proxy, 'proxy_failed': True
+                    'proxy': proxy, 'proxy_failed': is_proxy_issue
                 }
             raise
         
