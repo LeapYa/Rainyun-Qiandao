@@ -1841,6 +1841,8 @@ def init_selenium(account_id: str, proxy: str = None):
     ops.add_argument("--disable-dev-shm-usage")  # Docker 环境优化
     ops.add_argument("--disable-extensions")
     ops.add_argument("--disable-plugins")
+    # 开启性能日志：页面加载超时时可 dump 网络时间线，定位是 DNS/TTFB/资源下载哪个环节卡住
+    ops.set_capability("goog:loggingPrefs", {"performance": "ALL"})
     
     # 配置代理
     if proxy:
@@ -3243,6 +3245,42 @@ def diagnose_page_load_failure(driver, proxy=None):
         logger.warning(f"[诊断] 服务端探测: GET app.rainyun.com → {r.status_code}, 耗时 {r.elapsed.total_seconds():.2f}s")
     except Exception as diag_e:
         logger.warning(f"[诊断] 服务端探测失败: {str(diag_e)[:200]}")
+    # Chrome 性能日志：提取卡住期间的网络请求时间线，定位是 DNS/TTFB/资源下载哪个环节卡住
+    try:
+        entries = driver.get_log("performance")
+        slow_or_failed = []
+        for entry in entries:
+            try:
+                msg = json.loads(entry["message"])["message"]
+                method = msg.get("method", "")
+                params = msg.get("params", {})
+                # 只记录关键事件：请求失败、响应慢、主文档请求
+                if method == "Network.loadingFailed":
+                    url = params.get("requestId", "")[:120]
+                    err = params.get("errorText", "unknown")
+                    slow_or_failed.append(f"FAIL {url} ({err})")
+                elif method == "Network.responseReceived":
+                    resp = params.get("response", {})
+                    url = resp.get("url", "")[:120]
+                    mime = resp.get("mimeType", "")
+                    # 只关注主文档和慢响应，跳过图片/css 等小资源
+                    if mime.startswith("text/html") or "rainyun" in url:
+                        timing = resp.get("timing", {})
+                        ttfb_ms = timing.get("receiveHeadersEnd", 0) - timing.get("sendStart", 0)
+                        if ttfb_ms > 1000:  # TTFB 超过 1 秒标记为慢
+                            slow_or_failed.append(f"SLOW {url} TTFB={ttfb_ms:.0f}ms ({mime})")
+                        else:
+                            slow_or_failed.append(f"OK {url} TTFB={ttfb_ms:.0f}ms ({mime})")
+            except Exception:
+                continue
+        if slow_or_failed:
+            logger.warning(f"[诊断] 性能日志({len(slow_or_failed)} 条关键请求):")
+            for line in slow_or_failed[:20]:  # 最多输出 20 条避免日志过长
+                logger.warning(f"  {line}")
+        else:
+            logger.warning("[诊断] 性能日志: 无关键请求记录")
+    except Exception as diag_e:
+        logger.warning(f"[诊断] 无法获取性能日志: {diag_e}")
 
 
 def load_cookies(driver, account_id):
