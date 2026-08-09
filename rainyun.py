@@ -1032,91 +1032,227 @@ def validate_proxy(proxy, timeout=5, max_response_time=3):
         return False
 
 
+# ---- 轻量级免费代理抓取（自建，无第三方依赖）----
+# 替代改进版 freeproxy：5 个国内代理源并发抓取 + 探针验证找到即停，
+# 避免 pip install git+https 从 GitHub 拉取依赖时受 DNS 污染影响。
+
+_RANDOM_UA_POOL = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+]
+
+
+def _proxy_scraper_headers(referer=None):
+    """构造反反爬 headers：随机 UA + 随机 X-Forwarded-For 公网 IP。"""
+    headers = {
+        "User-Agent": random.choice(_RANDOM_UA_POOL),
+        "X-Forwarded-For": ".".join(str(random.randint(1, 254)) for _ in range(4)),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    if referer:
+        headers["Referer"] = referer
+    return headers
+
+
+def _extract_ip_port(text):
+    """从任意文本（纯文本/HTML/JSON）中提取所有合法的 ip:port 字符串。"""
+    import re
+    _OCTET = r'(?:25[0-5]|2[0-4]\d|1?\d?\d)'
+    # 前后加数字边界断言，避免从 999.1.1.1:80 中误提取 99.1.1.1:80
+    pattern = rf'(?<!\d)((?:{_OCTET}\.){{3}}{_OCTET}):(\d{{2,5}})(?!\d)'
+    return {
+        f"{ip}:{port}"
+        for ip, port in re.findall(pattern, text)
+        if 1 <= int(port) <= 65535
+    }
+
+
+def _scrape_ip89():
+    """89IP：国内纯文本 API，单次返回约 200 个代理。"""
+    import requests
+    resp = requests.get(
+        "https://api.89ip.cn/tqdl.html",
+        params={"api": "1", "num": "200", "port": "", "address": "", "isp": ""},
+        headers=_proxy_scraper_headers(), timeout=10,
+    )
+    resp.raise_for_status()
+    return _extract_ip_port(resp.text)
+
+
+def _scrape_kuaidaili():
+    """快代理：HTML 页面（HTTP 高匿），正则提取 ip:port。"""
+    import requests
+    headers = _proxy_scraper_headers(referer="https://www.kuaidaili.com/free/")
+    result = set()
+    for page in range(1, 3):
+        try:
+            resp = requests.get(
+                f"https://www.kuaidaili.com/free/inha/{page}/",
+                headers=headers, timeout=10,
+            )
+            resp.raise_for_status()
+            result |= _extract_ip_port(resp.text)
+        except Exception:
+            continue
+    return result
+
+
+def _scrape_kxdaili():
+    """开心代理：HTML 页面（高匿），正则提取 ip:port。"""
+    import requests
+    headers = _proxy_scraper_headers(referer="http://www.kxdaili.com/dailiip.html")
+    result = set()
+    for page in range(1, 3):
+        try:
+            resp = requests.get(
+                f"http://www.kxdaili.com/dailiip/1/{page}.html",
+                headers=headers, timeout=10,
+            )
+            resp.raise_for_status()
+            result |= _extract_ip_port(resp.text)
+        except Exception:
+            continue
+    return result
+
+
+def _scrape_qiyunip():
+    """齐云IP：HTML 页面，正则提取 ip:port。"""
+    import requests
+    result = set()
+    for page in range(1, 3):
+        try:
+            resp = requests.get(
+                f"https://www.qiyunip.com/freeProxy/{page}.html",
+                headers=_proxy_scraper_headers(), timeout=10,
+            )
+            resp.raise_for_status()
+            result |= _extract_ip_port(resp.text)
+        except Exception:
+            continue
+    return result
+
+
+def _scrape_proxyscrape():
+    """ProxyScrape：JSON API，过滤中国大陆代理。"""
+    import requests
+    resp = requests.get(
+        "https://api.proxyscrape.com/v4/free-proxy-list/get",
+        params={
+            "request": "get_proxies", "skip": "0",
+            "proxy_format": "protocolipport", "format": "json", "limit": "1000",
+        },
+        headers=_proxy_scraper_headers(), timeout=10,
+    )
+    resp.raise_for_status()
+    result = set()
+    for item in resp.json().get("proxies", []):
+        if not item.get("alive"):
+            continue
+        # 仅保留中国大陆代理，海外代理无法绕过雨云的海外 IP 拦截
+        if item.get("ip_data", {}).get("countryCode", "").upper() != "CN":
+            continue
+        ip, port = item.get("ip", ""), str(item.get("port", ""))
+        if ip and port:
+            result.add(f"{ip}:{port}")
+    return result
+
+
+# 代理源注册表：89IP/快代理/齐云/开心均为国内源（代理本身就是 CN），
+# ProxyScrape 自带国家码在 _scrape_proxyscrape 内过滤 CN，无需 ip2region 离线定位。
+_PROXY_SCRAPERS = [
+    _scrape_ip89, _scrape_kuaidaili, _scrape_kxdaili,
+    _scrape_qiyunip, _scrape_proxyscrape,
+]
+
+
 def get_freeproxy_ip(exclude_ips=None):
     """
-    使用改进版 freeproxy 抓取国内免费代理，以 app.rainyun.com 为探针并发验证，
-    找到可用代理即停止。仅用于 Actions 海外环境绕过 IP 拦截。
+    自建轻量级代理抓取：并发抓取 5 个国内免费代理源，以 app.rainyun.com 为探针
+    并发验证（状态 200 且响应 ≤3s），找到可用代理即停。无第三方依赖。
     :param exclude_ips: 本轮重试内已失败过的代理集合（"ip:port" 字符串），
-                        命中即停时跳过这些 IP，避免反复抓到同一个慢代理。
+                        命中即跳过，避免反复抓到同一个慢代理。
     :return: 代理地址字符串 "ip:port"，无可用代理时返回 None
     """
-    exclude_ips = set(exclude_ips or [])
-
-    try:
-        from freeproxy.freeproxy import ProxiedSessionClient
-    except ImportError:
-        logger.error("未安装代理库 freeproxy，请运行 pip install -r requirements.txt")
-        return None
-
+    import concurrent.futures
+    import requests
     try:
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     except Exception:
         pass
 
-    # 代理源：仅用免浏览器抓取的国内源
-    proxy_sources = [
-        "KuaidailiProxiedSession", "QiyunipProxiedSession", "KxdailiProxiedSession",
-        "IP89ProxiedSession", "TheSpeedXProxiedSession", "ProxyScrapeProxiedSession",
-    ]
-
-    # 已有失败代理时多抓几个候选再过滤，避免"命中即停"卡在黑名单代理上：
-    # 源抓取顺序固定，第一个通过探针的代理每次都会被选中，没有黑名单就会反复命中同一个慢代理
+    exclude_ips = set(exclude_ips or [])
+    # 已有失败代理时多验证几个候选，避免凑不够 need 时卡在黑名单代理上
     need = max(1, len(exclude_ips) + 3) if exclude_ips else 1
 
-    logger.info(f"正在抓取国内免费代理（以 app.rainyun.com 为探针，找到即停）...")
+    logger.info("正在抓取国内免费代理（5 源并发，以 app.rainyun.com 为探针验证）...")
 
-    try:
-        client = ProxiedSessionClient(
-            proxy_sources=proxy_sources,
-            init_proxied_session_cfg={
-                "max_pages": 2,
-                "filter_rule": {"country_code": ["CN"], "protocol": ["http", "https"]},
-            },
-            disable_print=True,
-            lazy=True,  # 不在构造阶段抓取，交给 fetch_working_streaming 边抓边验、命中即停
-        )
+    # 阶段1：并发抓取所有源，单个源失败不影响其他源
+    all_proxies = set()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_map = {executor.submit(scraper): scraper.__name__ for scraper in _PROXY_SCRAPERS}
+        try:
+            for future in concurrent.futures.as_completed(future_map, timeout=20):
+                name = future_map[future]
+                try:
+                    scraped = future.result()
+                    if scraped:
+                        logger.info(f"代理源 {name} 抓取到 {len(scraped)} 个代理")
+                        all_proxies |= scraped
+                except Exception as e:
+                    logger.warning(f"代理源 {name} 抓取失败: {e}")
+        except concurrent.futures.TimeoutError:
+            logger.warning("部分代理源抓取超时（20s），已跳过")
 
-        def _is_valid(resp):
-            # 能拿到 200 响应且响应够快，才证明代理可用于浏览器会话。
-            # 慢代理（>3s）会导致页面加载不完整、Cookie 无法送达，被误判为"Cookie 失效"。
-            try:
-                if resp.status_code != 200:
-                    return False
-                if resp.elapsed.total_seconds() > 3:
-                    return False
-                return True
-            except Exception:
-                return False
-
-        working = client.fetch_working_streaming(
-            test_url="https://app.rainyun.com/",
-            need=need,
-            source_timeout=15,
-            validate_timeout=5,
-            validate_workers=64,
-            method="GET",
-            is_valid=_is_valid,
-        )
-    except Exception as e:
-        logger.error(f"抓取国内代理失败: {e}")
+    candidates = [p for p in all_proxies if p not in exclude_ips]
+    if not candidates:
+        logger.warning("未抓取到任何代理")
         return None
+
+    logger.info(f"共 {len(candidates)} 个候选代理（已排除 {len(exclude_ips)} 个黑名单），开始并发验证...")
+
+    # 阶段2：并发验证，找到 need 个可用即停
+    working = []
+    working_lock = threading.Lock()
+    stop_event = threading.Event()
+
+    def _validate(proxy_str):
+        if stop_event.is_set():
+            return None
+        try:
+            proxies = {"http": f"http://{proxy_str}", "https": f"http://{proxy_str}"}
+            resp = requests.get("https://app.rainyun.com/", proxies=proxies, timeout=5)
+            # 慢代理（>3s）会导致页面加载不完整、Cookie 无法送达，被误判为"Cookie 失效"
+            if resp.status_code == 200 and resp.elapsed.total_seconds() <= 3:
+                return proxy_str
+        except Exception:
+            pass
+        return None
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=64)
+    future_map = {executor.submit(_validate, p): p for p in candidates}
+    try:
+        for future in concurrent.futures.as_completed(future_map):
+            result = future.result()
+            if result:
+                with working_lock:
+                    working.append(result)
+                    if len(working) >= need:
+                        stop_event.set()
+                        break
+    finally:
+        executor.shutdown(wait=False)
 
     if not working:
         logger.warning("未找到可用的国内代理")
         return None
 
-    # fetch_working_streaming 返回 requests 格式字典，提取 ip:port 给 Selenium 使用
-    # 过滤掉本轮已失败过的代理，挑第一个可用的（working 已按探针验证顺序排列）
-    for proxy_dict in working:
-        proxy_url = proxy_dict.get("http") or proxy_dict.get("https") or ""
-        proxy_str = proxy_url.replace("http://", "").replace("https://", "").strip("/")
-        if proxy_str and proxy_str not in exclude_ips:
-            logger.info(f"获取到可用国内代理: {proxy_str}")
-            return proxy_str
-
-    logger.warning(f"抓到 {len(working)} 个代理但均在本轮失败黑名单内: {exclude_ips}")
-    return None
+    proxy = working[0]
+    logger.info(f"获取到可用国内代理: {proxy}（共验证通过 {len(working)} 个）")
+    return proxy
 
 
 # SVG图标

@@ -3,6 +3,3 @@ requests~=2.32.4
 selenium~=4.15.0
 opencv-python-headless~=4.12.0.88
 schedule~=1.2.0
-# 改进版免费代理库（fork）：ip2region 本地离线定位 + 找到可用代理即停
-# Actions 海外 IP 被雨云拒绝连接时，自动抓取国内代理绕过拦截
-git+https://github.com/LeapYa/freeproxy.git@master
