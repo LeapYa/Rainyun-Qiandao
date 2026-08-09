@@ -11,9 +11,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
-# GitHub Actions 环境检测（Actions 海外 IP 会被雨云拒绝连接，需自动走国内代理）
-_IN_ACTIONS = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
-
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 
 
@@ -943,26 +940,47 @@ def parse_proxy_response(response_text):
     return None
 
 
+# 雨云拦截探测结果缓存（避免重试时反复吃 8s timeout）
+# 拦截通常持续较久，缓存命中可让重试跳过重复探测；未拦截时不缓存，让重试有机会重新探测
+_blocked_cache = {'blocked': None, 'expire_at': 0}
+_BLOCKED_CACHE_TTL = 300  # 5 分钟
+
+
 def check_rainyun_blocked(timeout=8):
     """
     检测当前网络环境是否被雨云拦截（海外 IP 无法访问 app.rainyun.com）。
     直连请求 app.rainyun.com，连接失败或超时则认为被拦截。
+    被拦截的结果缓存 5 分钟（拦截通常持续较久，避免重试时反复吃 8s timeout）；
+    未拦截的结果不缓存（让重试有机会重新探测，应对拦截恢复后切回直连）。
     :param timeout: 请求超时时间（秒）
     :return: True 表示被拦截（需要代理），False 表示可直连
     """
+    import time as _time
+    # 命中缓存：被拦截且未过期，直接返回，跳过 8s timeout 探测
+    if _blocked_cache['blocked'] is True and _time.time() < _blocked_cache['expire_at']:
+        logger.debug("雨云拦截探测命中缓存（被拦截），跳过重复探测")
+        return True
+
     import requests
     try:
         resp = requests.get("https://app.rainyun.com/", timeout=timeout, allow_redirects=False)
         if resp.status_code in (200, 301, 302):
             return False
         logger.warning(f"直连 app.rainyun.com 返回异常状态码 {resp.status_code}，疑似被拦截")
+        _blocked_cache['blocked'] = True
+        _blocked_cache['expire_at'] = _time.time() + _BLOCKED_CACHE_TTL
         return True
-    except requests.Timeout:
-        logger.warning("直连 app.rainyun.com 超时，疑似海外 IP 被拦截")
+    except (requests.ConnectionError, requests.Timeout, requests.exceptions.SSLError) as e:
+        # 连接被拒/超时/SSL握手失败是拦截的可靠信号
+        logger.warning(f"直连 app.rainyun.com 连接失败，疑似海外 IP 被拦截: {e}")
+        _blocked_cache['blocked'] = True
+        _blocked_cache['expire_at'] = _time.time() + _BLOCKED_CACHE_TTL
         return True
     except Exception as e:
-        logger.warning(f"直连 app.rainyun.com 失败: {e}，疑似海外 IP 被拦截")
-        return True
+        # 其他异常（DNS 抖动、临时网络毛刺、库内部错误等）不能可靠判断为拦截，
+        # 按"未被拦截"处理走直连，避免偶发网络问题误触发慢代理分支
+        logger.warning(f"直连 app.rainyun.com 探测时发生非连接类异常，按未拦截处理（走直连）: {e}")
+        return False
 
 
 def validate_proxy(proxy, timeout=5, max_response_time=3):
@@ -1014,12 +1032,16 @@ def validate_proxy(proxy, timeout=5, max_response_time=3):
         return False
 
 
-def get_freeproxy_ip():
+def get_freeproxy_ip(exclude_ips=None):
     """
     使用改进版 freeproxy 抓取国内免费代理，以 app.rainyun.com 为探针并发验证，
     找到可用代理即停止。仅用于 Actions 海外环境绕过 IP 拦截。
+    :param exclude_ips: 本轮重试内已失败过的代理集合（"ip:port" 字符串），
+                        命中即停时跳过这些 IP，避免反复抓到同一个慢代理。
     :return: 代理地址字符串 "ip:port"，无可用代理时返回 None
     """
+    exclude_ips = set(exclude_ips or [])
+
     try:
         from freeproxy.freeproxy import ProxiedSessionClient
     except ImportError:
@@ -1038,7 +1060,11 @@ def get_freeproxy_ip():
         "IP89ProxiedSession", "TheSpeedXProxiedSession", "ProxyScrapeProxiedSession",
     ]
 
-    logger.info("正在抓取国内免费代理（以 app.rainyun.com 为探针，找到即停）...")
+    # 已有失败代理时多抓几个候选再过滤，避免"命中即停"卡在黑名单代理上：
+    # 源抓取顺序固定，第一个通过探针的代理每次都会被选中，没有黑名单就会反复命中同一个慢代理
+    need = max(1, len(exclude_ips) + 3) if exclude_ips else 1
+
+    logger.info(f"正在抓取国内免费代理（以 app.rainyun.com 为探针，找到即停）...")
 
     try:
         client = ProxiedSessionClient(
@@ -1065,7 +1091,7 @@ def get_freeproxy_ip():
 
         working = client.fetch_working_streaming(
             test_url="https://app.rainyun.com/",
-            need=1,
+            need=need,
             source_timeout=15,
             validate_timeout=5,
             validate_workers=64,
@@ -1081,11 +1107,16 @@ def get_freeproxy_ip():
         return None
 
     # fetch_working_streaming 返回 requests 格式字典，提取 ip:port 给 Selenium 使用
-    proxy_dict = working[0]
-    proxy_url = proxy_dict.get("http") or proxy_dict.get("https") or ""
-    proxy_str = proxy_url.replace("http://", "").replace("https://", "").strip("/")
-    logger.info(f"获取到可用国内代理: {proxy_str}")
-    return proxy_str if proxy_str else None
+    # 过滤掉本轮已失败过的代理，挑第一个可用的（working 已按探针验证顺序排列）
+    for proxy_dict in working:
+        proxy_url = proxy_dict.get("http") or proxy_dict.get("https") or ""
+        proxy_str = proxy_url.replace("http://", "").replace("https://", "").strip("/")
+        if proxy_str and proxy_str not in exclude_ips:
+            logger.info(f"获取到可用国内代理: {proxy_str}")
+            return proxy_str
+
+    logger.warning(f"抓到 {len(working)} 个代理但均在本轮失败黑名单内: {exclude_ips}")
+    return None
 
 
 # SVG图标
@@ -1608,7 +1639,8 @@ def run_all_accounts():
             'password': password,
             'result': None,
             'retry_count': 0,
-            'index': i + 1
+            'index': i + 1,
+            'failed_proxies': set(),  # 本轮重试内已失败过的代理 IP，下次抓取时跳过
         }
     
     # 待执行的账号列表
@@ -1650,7 +1682,10 @@ def run_all_accounts():
                     else:
                         logger.info(f"上次失败由代理引起，不复用旧代理，重新抓取")
 
-                future = executor.submit(run_checkin, username, password, reuse_proxy)
+                # 传入本轮已失败过的代理集合，重新抓取时跳过这些 IP，
+                # 避免源抓取顺序固定导致反复命中同一个慢代理
+                failed_proxies = results[username]['failed_proxies']
+                future = executor.submit(run_checkin, username, password, reuse_proxy, failed_proxies)
                 future_to_account[future] = username
 
             # 获取结果
@@ -1666,6 +1701,10 @@ def run_all_accounts():
                         logger.info(f"✅ 账号 {account_idx} 签到成功")
                     else:
                         logger.error(f"❌ 账号 {account_idx} 签到失败: {result['msg']}")
+                        # 代理确认失败时，把该代理 IP 记入黑名单，下次重试抓取时跳过，
+                        # 避免源抓取顺序固定导致反复命中同一个慢代理（密码错误等非代理失败不记）
+                        if result.get('proxy_failed') and result.get('proxy'):
+                            results[username]['failed_proxies'].add(result['proxy'])
                         results[username]['retry_count'] += 1
                         # 还没达到最大重试次数，加入待重试列表
                         if results[username]['retry_count'] <= max_retries:
@@ -3234,8 +3273,12 @@ def load_cookies(driver, account_id):
         return False
 
 
-def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
-    """执行签到任务"""
+def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_proxies=None):
+    """执行签到任务
+
+    :param failed_proxies: 本轮重试内已失败过的代理集合（"ip:port" 字符串），
+                            重新抓取代理时跳过这些 IP，避免反复命中同一个慢代理。
+    """
     # 导入Selenium模块
     modules = import_selenium_modules()
     webdriver = modules['webdriver']
@@ -3283,10 +3326,10 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
                     proxy = None
             else:
                 logger_adapter.warning("获取代理失败，将使用本地IP继续")
-        elif _IN_ACTIONS or check_rainyun_blocked():
-            # 海外 IP 会被雨云拒绝连接（浏览器显示 This site can't be reached），
-            # 自动抓取国内免费代理绕过拦截。
-            # 覆盖 GitHub Actions、海外 VPS、Docker 等所有海外环境。
+        elif check_rainyun_blocked():
+            # 实时探测 app.rainyun.com 可达性：雨云的海外 IP 拦截策略是动态的，
+            # 可能间歇性放开或收紧，因此不按环境硬编码，统一以探测结果决定是否走代理。
+            # 被拦截时自动抓取国内免费代理绕过（覆盖 GitHub Actions、海外 VPS、Docker 等）。
             # 重试时优先复用上次的代理：换 IP 会导致服务器 Cookie 失效，
             # 进而被迫走密码登录，而慢代理下密码登录容易超时失败。
             if reuse_proxy:
@@ -3295,9 +3338,9 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None):
                     logger_adapter.info(f"复用上次代理: {proxy}（避免换 IP 导致 Cookie 失效）")
                 else:
                     logger_adapter.warning(f"上次代理 {reuse_proxy} 已失效，重新抓取国内代理")
-                    proxy = get_freeproxy_ip()
+                    proxy = get_freeproxy_ip(exclude_ips=failed_proxies)
             else:
-                proxy = get_freeproxy_ip()
+                proxy = get_freeproxy_ip(exclude_ips=failed_proxies)
             if proxy:
                 logger_adapter.info(f"国内代理 {proxy} 已就绪，用于绕过海外 IP 拦截")
             else:

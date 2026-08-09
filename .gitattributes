@@ -1,0 +1,2 @@
+# 强制文本文件使用 LF 换行符，避免 autocrlf 导致整文件 diff 污染
+* text=auto eol=lf
