@@ -1624,9 +1624,15 @@ def save_screenshot(driver, account_id, status="success", error_msg=""):
         return None
 
 
-def compress_screenshot(input_path, output_path, max_width=800, quality=35):
-    """先本地 Pillow 压缩，如果配置了 TinyPNG 则二次压缩"""
-    result = compress_with_pillow(input_path, output_path, max_width, quality)
+def compress_screenshot(input_path, output_path, max_width=800, quality=None):
+    """先本地 OpenCV 压缩，如果配置了 TinyPNG 则二次压缩"""
+    if quality is None:
+        try:
+            quality = int(os.getenv("SCREENSHOT_QUALITY", "35"))
+        except ValueError:
+            quality = 35
+        quality = max(10, min(100, quality))
+    result = compress_with_cv2(input_path, output_path, max_width, quality)
     if not result:
         return None
     
@@ -1684,24 +1690,79 @@ def compress_with_tinypng(input_path, output_path, api_key):
         return None
 
 
-def compress_with_pillow(input_path, output_path, max_width=1280, quality=40):
-    """使用 Pillow 本地压缩"""
+def _ssim_channel(gray_a, gray_b):
+    import cv2
+
+    C1 = (0.01 * 255) ** 2
+    C2 = (0.03 * 255) ** 2
+    a = gray_a.astype("float64")
+    b = gray_b.astype("float64")
+    mu_a = cv2.GaussianBlur(a, (7, 7), 1.5)
+    mu_b = cv2.GaussianBlur(b, (7, 7), 1.5)
+    var_a = cv2.GaussianBlur(a * a, (7, 7), 1.5) - mu_a * mu_a
+    var_b = cv2.GaussianBlur(b * b, (7, 7), 1.5) - mu_b * mu_b
+    cov_ab = cv2.GaussianBlur(a * b, (7, 7), 1.5) - mu_a * mu_b
+    ssim_map = ((2 * mu_a * mu_b + C1) * (2 * cov_ab + C2)) / \
+               ((mu_a * mu_a + mu_b * mu_b + C1) * (var_a + var_b + C2))
+    return float(ssim_map.mean())
+
+
+def _ssim(img_a, img_b):
+    """两张彩色图的结构相似度（0~1），取三通道最差值，数值越低画质损失越大"""
+    return min(_ssim_channel(img_a[:, :, c], img_b[:, :, c]) for c in range(3))
+
+
+# 自适应压缩的可读性底线：SSIM 低于此值视为「看不清了」
+SSIM_FLOOR = 0.95
+# 自适应搜索的最低质量档，再低文字笔画会明显崩坏
+MIN_JPEG_QUALITY = 15
+
+
+def compress_with_cv2(input_path, output_path, max_width=1280, quality=40):
+    """OpenCV 压缩截图。quality 为上限：从上限逐档下调，取 SSIM 仍达标的最低档"""
     try:
-        from PIL import Image
-        
-        with Image.open(input_path) as img:
-            if img.mode in ('RGBA', 'P'):
-                img = img.convert('RGB')
-            
-            w, h = img.size
-            if w > max_width:
-                img = img.resize((max_width, int(h * max_width / w)), Image.Resampling.LANCZOS)
-            
-            img.save(output_path, 'JPEG', quality=quality, optimize=True)
-        
+        import cv2
+
+        img = cv2.imread(input_path, cv2.IMREAD_COLOR)
+        if img is None:
+            logger.warning(f"OpenCV 无法读取截图: {input_path}")
+            return None
+
+        h, w = img.shape[:2]
+        if w > max_width:
+            img = cv2.resize(img, (max_width, int(h * max_width / w)), interpolation=cv2.INTER_AREA)
+
+        # 4:4:4：色度不降采样，避免彩色文字边缘串色
+        encode_params = [cv2.IMWRITE_JPEG_OPTIMIZE, 1, cv2.IMWRITE_JPEG_PROGRESSIVE, 1,
+                         cv2.IMWRITE_JPEG_SAMPLING_FACTOR, cv2.IMWRITE_JPEG_SAMPLING_FACTOR_444]
+
+        chosen_buf = None
+        chosen_q = quality
+        chosen_ssim = 1.0
+        for q in range(quality, MIN_JPEG_QUALITY - 1, -5):
+            ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, q] + encode_params)
+            if not ok:
+                continue
+            ssim = _ssim(img, cv2.imdecode(buf, cv2.IMREAD_COLOR))
+            if ssim < SSIM_FLOOR:
+                break
+            chosen_buf, chosen_q, chosen_ssim = buf, q, ssim
+
+        if chosen_buf is None:
+            # 上限档位自己就不达标，尊重上限原样输出
+            ok, chosen_buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality] + encode_params)
+            if not ok:
+                logger.warning(f"OpenCV 无法编码 JPEG: {input_path}")
+                return None
+        elif chosen_q < quality:
+            logger.info(f"自适应压缩: 上限 q{quality} -> q{chosen_q} (SSIM {chosen_ssim:.3f})")
+
+        with open(output_path, "wb") as f:
+            f.write(chosen_buf.tobytes())
+
         return os.path.getsize(output_path)
     except Exception as e:
-        logger.debug(f"Pillow 压缩出错: {e}")
+        logger.warning(f"OpenCV 压缩出错: {e}")
         return None
 
 def cleanup_old_screenshots(screenshot_dir, days=7):
@@ -1979,10 +2040,8 @@ def init_selenium(account_id: str, proxy: str = None):
     ops.add_argument("--disable-plugins")
     # 开启性能日志：页面加载超时时可 dump 网络时间线，定位是 DNS/TTFB/资源下载哪个环节卡住
     ops.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-    # 页面加载策略用 eager：DOMContentLoaded 即返回，不等待所有子资源下载完。
-    # normal 策略下，跨太平洋访问时偶发某个慢子资源（图片/字体/统计脚本）挂起，
-    # 会让 driver.get() 卡满 page_load_timeout 抛 renderer 超时——而此时主文档早已就绪，
-    # 造成「页面卡住」的假失败。后续流程本就靠 WebDriverWait 等元素渲染，不依赖 load 事件。
+    # 页面加载策略用 eager：DOMContentLoaded 即返回，不等慢子资源挂起卡满超时造成假失败；
+    # 后续流程靠 WebDriverWait 等元素渲染，不依赖 load 事件
     ops.page_load_strategy = "eager"
     
     # 配置代理
@@ -2007,18 +2066,14 @@ def init_selenium(account_id: str, proxy: str = None):
         ops.add_argument("--disable-gpu")
 
         # 检测 ChromeDriver 路径
-        # 仅 Docker (Selenium镜像) 使用固定路径 /usr/bin/chromedriver；
-        # GitHub Actions runner 也预装了 /usr/bin/chromedriver，但它匹配的是 runner
-        # 自带 Chrome 而非 setup-chrome 安装的版本，混用会有版本错位风险，
-        # 因此 Actions 等环境强制走 Selenium Manager 自动管理（版本自动对齐）。
+        # 仅 Docker 使用固定路径 /usr/bin/chromedriver；Actions runner 预装的同名文件
+        # 版本与 setup-chrome 装的 Chrome 不一致，故仅 /.dockerenv 存在时才用
         chromedriver_path = "/usr/bin/chromedriver"
 
         if os.path.exists("/.dockerenv") and os.path.exists(chromedriver_path):
-            # Docker 环境：使用固定路径
             logger.info(f"使用 Docker 镜像的 ChromeDriver: {chromedriver_path}")
             service = Service(chromedriver_path)
         else:
-            # GitHub Actions 等环境：使用 Selenium Manager 自动管理
             logger.info("使用 Selenium Manager 自动管理 ChromeDriver")
             service = Service()
         
@@ -2446,11 +2501,9 @@ def diagnose_page_load_failure(driver, proxy=None):
 def safe_get(driver, url):
     """
     带容错的主文档跳转。
-    即使 page_load_strategy=eager，仍可能偶发主文档本身超时（跨太平洋网络抖动）。
     page_load_timeout 触发后先 window.stop()，再检查页面实际状态：
-    若主文档已加载（readyState interactive/complete 且源码长度正常），视为成功继续流程，
-    避免「页面卡住」的假失败；页面确实没加载出来时原样抛 TimeoutException，
-    交给调用方按连接失败处理（TimeoutException 是 WebDriverException 子类）。
+    主文档已加载（readyState interactive/complete 且源码长度正常）则继续流程，
+    避免「页面卡住」的假失败；确实没加载出来才原样抛 TimeoutException 走失败处理。
     :return: True 页面可用（含超时后抢救成功）
     """
     modules = import_selenium_modules()

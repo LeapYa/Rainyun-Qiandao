@@ -107,6 +107,7 @@ cp .env.example .env
 | 变量名              | 说明                                                                  | 默认值          |
 | ------------------- | --------------------------------------------------------------------- | --------------- |
 | `SCREENSHOT_MODE` | 截图嵌入策略：`all` 全部 / `failed_only` 仅失败 / `none` 无截图 | `failed_only` |
+| `SCREENSHOT_QUALITY` | 截图 JPEG 质量上限（10-100），实际只会更低：逐档下调取画质仍达标的最低档，设得很低时等同固定质量 | `35` |
 | `TINYPNG_API_KEY` | [TinyPNG](https://tinypng.com/developers) API Key（每月免费 500 次）   | 不填则本地压缩  |
 
 </details>
