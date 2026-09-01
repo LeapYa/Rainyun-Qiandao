@@ -1997,7 +1997,7 @@ def run_all_accounts():
             
             # 一次性生成 7 份内容，由各 Provider 按自身限制自动选择
             context = {
-                'html_email':        generate_html_report(final_results, screenshot_mode='all'), # 邮件无限制，强制全带截图
+                'html_email':        generate_html_report(final_results, screenshot_mode=screenshot_mode),
                 'html_full':         generate_html_report(final_results, screenshot_mode=screenshot_mode),
                 'html_lite':         generate_html_report(final_results, screenshot_mode='none'),
                 'markdown_full':     generate_markdown_report(final_results, compact=False),
