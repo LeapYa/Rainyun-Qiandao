@@ -1979,6 +1979,11 @@ def init_selenium(account_id: str, proxy: str = None):
     ops.add_argument("--disable-plugins")
     # 开启性能日志：页面加载超时时可 dump 网络时间线，定位是 DNS/TTFB/资源下载哪个环节卡住
     ops.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+    # 页面加载策略用 eager：DOMContentLoaded 即返回，不等待所有子资源下载完。
+    # normal 策略下，跨太平洋访问时偶发某个慢子资源（图片/字体/统计脚本）挂起，
+    # 会让 driver.get() 卡满 page_load_timeout 抛 renderer 超时——而此时主文档早已就绪，
+    # 造成「页面卡住」的假失败。后续流程本就靠 WebDriverWait 等元素渲染，不依赖 load 事件。
+    ops.page_load_strategy = "eager"
     
     # 配置代理
     if proxy:
@@ -2002,11 +2007,13 @@ def init_selenium(account_id: str, proxy: str = None):
         ops.add_argument("--disable-gpu")
 
         # 检测 ChromeDriver 路径
-        # Docker (Selenium镜像) 使用固定路径
-        # GitHub Actions 等环境使用 Selenium Manager 自动管理
+        # 仅 Docker (Selenium镜像) 使用固定路径 /usr/bin/chromedriver；
+        # GitHub Actions runner 也预装了 /usr/bin/chromedriver，但它匹配的是 runner
+        # 自带 Chrome 而非 setup-chrome 安装的版本，混用会有版本错位风险，
+        # 因此 Actions 等环境强制走 Selenium Manager 自动管理（版本自动对齐）。
         chromedriver_path = "/usr/bin/chromedriver"
-        
-        if os.path.exists(chromedriver_path):
+
+        if os.path.exists("/.dockerenv") and os.path.exists(chromedriver_path):
             # Docker 环境：使用固定路径
             logger.info(f"使用 Docker 镜像的 ChromeDriver: {chromedriver_path}")
             service = Service(chromedriver_path)
@@ -3365,6 +3372,9 @@ def save_cookies(driver, account_id):
 
 def diagnose_page_load_failure(driver, proxy=None):
     """页面加载超时时记录诊断信息，便于区分网络波动/服务端慢/页面资源卡住"""
+    # requests/json 非模块级导入，函数内显式导入，避免诊断流程自身报 NameError 失效
+    import json
+    import requests
     # 浏览器状态：看 driver 卡在哪一步
     try:
         cur_url = driver.current_url or "(空)"
@@ -3419,6 +3429,41 @@ def diagnose_page_load_failure(driver, proxy=None):
         logger.warning(f"[诊断] 无法获取性能日志: {diag_e}")
 
 
+def safe_get(driver, url):
+    """
+    带容错的主文档跳转。
+    即使 page_load_strategy=eager，仍可能偶发主文档本身超时（跨太平洋网络抖动）。
+    page_load_timeout 触发后先 window.stop()，再检查页面实际状态：
+    若主文档已加载（readyState interactive/complete 且源码长度正常），视为成功继续流程，
+    避免「页面卡住」的假失败；页面确实没加载出来时原样抛 TimeoutException，
+    交给调用方按连接失败处理（TimeoutException 是 WebDriverException 子类）。
+    :return: True 页面可用（含超时后抢救成功）
+    """
+    modules = import_selenium_modules()
+    TimeoutException = modules['TimeoutException']
+    try:
+        driver.get(url)
+        return True
+    except TimeoutException:
+        logger.warning(f"页面加载超时（{url}），停止加载并检查页面实际状态...")
+        try:
+            driver.execute_script("window.stop();")
+        except Exception:
+            pass
+        time.sleep(1)
+        # 浏览器连查询都响应不了 = 真卡死，此处会抛异常向上传播
+        ready_state = driver.execute_script("return document.readyState") or "unknown"
+        page_len = len(driver.page_source or "")
+        if ready_state in ("interactive", "complete") and page_len > 500:
+            logger.warning(
+                f"超时但主文档已就绪（readyState={ready_state}, {page_len} 字符），"
+                "忽略未完成的慢子资源，继续流程"
+            )
+            return True
+        logger.error(f"超时且页面未加载出来（readyState={ready_state}, 源码仅 {page_len} 字符）")
+        raise
+
+
 def load_cookies(driver, account_id):
     """加载账号 Cookie 到浏览器，返回是否成功加载"""
     import json
@@ -3439,7 +3484,7 @@ def load_cookies(driver, account_id):
             cookies = json.load(f)
             
         # 必须先访问域名才能设置 Cookie
-        driver.get("https://app.rainyun.com/")
+        safe_get(driver, "https://app.rainyun.com/")
         time.sleep(1)
         
         for cookie in cookies:
@@ -3567,7 +3612,7 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_pr
         try:
             load_cookies(driver, current_user)
             logger_adapter.info("正在跳转积分页...")
-            driver.get("https://app.rainyun.com/account/reward/earn")
+            safe_get(driver, "https://app.rainyun.com/account/reward/earn")
             time.sleep(3)
         except WebDriverException as e:
             error_msg = str(e)
@@ -3693,7 +3738,7 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_pr
                 if login_outcome == "success":
                     logger_adapter.info("登录成功！")
                     save_cookies(driver, current_user)
-                    driver.get("https://app.rainyun.com/account/reward/earn")
+                    safe_get(driver, "https://app.rainyun.com/account/reward/earn")
                     time.sleep(2)
                 else:
                     # 页面显示了 toast 错误提示 → 账号密码错误，非代理问题
@@ -3735,7 +3780,7 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_pr
         
         # 确保在积分页
         if "/account/reward/earn" not in driver.current_url:
-            driver.get("https://app.rainyun.com/account/reward/earn")
+            safe_get(driver, "https://app.rainyun.com/account/reward/earn")
 
         driver.implicitly_wait(5)
         time.sleep(1)
