@@ -2859,7 +2859,19 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_pr
         # 注意：末尾用 span[2] 而非 span[2]/a —— 签到完成后按钮变为"已完成"，
         # 此时 span[2] 下没有 <a> 子元素，带 /a 会抛 NoSuchElementException。
         CHECKIN_BTN_XPATH = '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div//div/div[1]/div[span[1][normalize-space(text())="每日签到"]]/span[2]'
-        earn = driver.find_element(By.XPATH, CHECKIN_BTN_XPATH)
+        # eager 策略下 safe_get 返回较早，任务列表靠 XHR 填充可能滞后；
+        # 等不到就刷新积分页再试一次，仍没有才判失败
+        try:
+            earn = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.XPATH, CHECKIN_BTN_XPATH))
+            )
+        except TimeoutException:
+            logger_adapter.warning("未找到签到按钮，刷新积分页重试...")
+            safe_get(driver, "https://app.rainyun.com/account/reward/earn")
+            dismiss_modal_confirm(driver, timeout)
+            earn = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.XPATH, CHECKIN_BTN_XPATH))
+            )
         btn_text = earn.text.strip()
         logger_adapter.info(f"签到按钮文字: [{btn_text}]")
 
