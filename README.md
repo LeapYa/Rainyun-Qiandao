@@ -270,6 +270,14 @@ http://192.168.1.1:8080
 
 ## 更新日志
 
+### 2026-09-01
+
+- 验证码识别切换为纯算法方案（ICR）：黑色区域阈值分割 + 多角度模板匹配 + 贪心冲突消解，一次识别全部目标，替代 ddddocr；`requirements.txt` 移除 ddddocr，解除 Python <3.13 上限与 onnxruntime 的 glibc 强绑定（Alpine 下可用 apk 安装 opencv/numpy 运行）
+- 修复 Actions 偶发页面卡住：页面加载策略改为 `eager`（DOMContentLoaded 即返回），跨太平洋慢子资源挂起不再导致 `driver.get()` 卡满超时；新增 `safe_get` 容错跳转，超时后页面实际已就绪则继续流程，不再误判为连接失败
+- 修复诊断函数缺失 `import json`/`import requests` 导致页面超时诊断实际失效
+- 修复 ChromeDriver 版本错位：`/usr/bin/chromedriver` 固定路径仅限 Docker 使用，Actions 等环境改由 Selenium Manager 自动对齐版本
+- 截图压缩优化：压缩实现从 Pillow 切换到项目已有依赖 OpenCV，不为压缩单独引入新依赖；新增 `SCREENSHOT_QUALITY` 配置（默认 35，语义为质量上限），自适应搜索取逐通道 SSIM ≥ 0.95 的最低档，体积不超过所设质量的固定编码；色度 4:4:4 不降采样，修复彩色状态文字渗色；启用 JPEG 优化霍夫曼表与渐进式编码
+
 ### 2026-08-10
 
 - 修复登录按钮 `StaleElementReferenceException`：填账号密码可能触发 Vue 重渲染导致 `login_button` 引用失效，改为填完后重新获取按钮再点击；同时 `visibility_of_element_located` 改为 `element_to_be_clickable` 确保 `enabled` 状态
