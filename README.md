@@ -8,9 +8,9 @@
 
 众所周知，雨云为了防止白嫖加入了TCaptcha验证码，但主包对JS逆向一窍不通，纯请求的方法便走不通了。
 
-因此只能曲线救国，使用 **Selenium+ddddocr** 来模拟真人操作。
+因此只能曲线救国，使用 **Selenium+OpenCV** 来模拟真人操作。
 
-经不严谨测试，目前的方案验证码识别率高达**48.3%**，不过多次重试最终也能通过验证，那么目的达成！
+经不严谨测试，目前的方案验证码识别率高达**~~48.3%~~ 99%**~~，不过多次重试最终也能通过验证，那么目的达成~~！
 
 **本分支特色功能：**
 
@@ -383,6 +383,8 @@ GitHub 对 Fork 仓库的定时任务有限制，需要手动激活：
 ## 致谢
 
 本项目基于 [Rainyun-Qiandao](https://github.com/SerendipityR-2022/Rainyun-Qiandao) 开发，感谢原作者的开源贡献。
+
+验证码识别模块（ICR）移植自上游仓库，其思路源自 [RainyunCheckIn@FalseHappiness](https://github.com/FalseHappiness/RainyunCheckIn)，在此一并感谢。
 
 > [!NOTE]
 > **免责声明与致谢**
