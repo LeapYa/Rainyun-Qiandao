@@ -1,8 +1,8 @@
-# Rainyun-Qiandao-v2.3 (Selenium)
+# Rainyun-Qiandao-v3.0 (Selenium)
 
 **🐳 容器化部署，内置定时任务**
 
-**v2.3 版本更新！**
+**v3.0 版本更新！验证码识别切换纯算法方案，识别率高达 99%**
 
 **雨云签到工具 容器化部署后可实现每日自动签到~**
 
@@ -270,7 +270,7 @@ http://192.168.1.1:8080
 
 ## 更新日志
 
-### 2026-09-01
+### 2026-09-01 (v3.0)
 
 - 验证码识别切换为纯算法方案（ICR）：黑色区域阈值分割 + 多角度模板匹配 + 贪心冲突消解，一次识别全部目标，替代 ddddocr；`requirements.txt` 移除 ddddocr，解除 Python <3.13 上限与 onnxruntime 的 glibc 强绑定（Alpine 下可用 apk 安装 opencv/numpy 运行）
 - 修复 Actions 偶发页面卡住：页面加载策略改为 `eager`（DOMContentLoaded 即返回），跨太平洋慢子资源挂起不再导致 `driver.get()` 卡满超时；新增 `safe_get` 容错跳转，超时后页面实际已就绪则继续流程，不再误判为连接失败
