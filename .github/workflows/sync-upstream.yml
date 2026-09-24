@@ -1,0 +1,61 @@
+name: 同步上游仓库
+
+# 为 Fork 仓库自动同步上游（LeapYa/Rainyun-Qiandao）更新：
+# 大部分 Fork 用户不关注上游，签到代码过期后无人维护。
+# 本 workflow 每天在北京时间 6:30（签到前 15 分钟）检查上游，
+# 有新提交则自动合并并推送到 Fork 的 main，随后当天的签到即使用最新代码。
+# 在上游仓库自身运行时自动跳过。
+
+on:
+  schedule:
+    - cron: '30 22 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    # 上游仓库自身无需同步（只有 Fork 才需要）
+    if: github.repository != 'LeapYa/Rainyun-Qiandao'
+    steps:
+      - name: 检出代码（完整历史，合并需要）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 同步上游
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/LeapYa/Rainyun-Qiandao.git 2>/dev/null || true
+          git fetch upstream main
+
+          LOCAL=$(git rev-parse HEAD)
+          REMOTE=$(git rev-parse upstream/main)
+          BASE=$(git merge-base HEAD upstream/main)
+
+          if [ "$LOCAL" = "$REMOTE" ]; then
+            echo "已是最新，无需同步"
+            exit 0
+          fi
+
+          if [ "$BASE" = "$LOCAL" ]; then
+            # 本地无分叉提交，直接快进
+            echo "快进合并上游更新..."
+            git merge --ff-only upstream/main
+          else
+            # 本地有分叉提交（如保活提交或用户自行修改）。
+            # 冲突时优先保留本地内容（-X ours），其余上游变更照常合入，
+            # 既不破坏 Fork 用户的本地修改，又能拿到上游的功能更新。
+            echo "本地存在分叉提交，执行合并（冲突优先保留本地）..."
+            git merge upstream/main -X ours --no-edit -m "chore: merge upstream changes [skip ci]" || {
+              echo "::warning::自动合并冲突过多，已放弃本次同步，请手动 Sync fork"
+              git merge --abort 2>/dev/null || true
+              exit 0
+            }
+          fi
+
+          git push origin main && echo "同步完成" || echo "push 失败，等待下次运行"
