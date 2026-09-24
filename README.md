@@ -1,8 +1,8 @@
-# Rainyun-Qiandao-v3.0 (Selenium)
+# Rainyun-Qiandao-v3.1 (Selenium)
 
 **🐳 容器化部署，内置定时任务**
 
-**v3.0 版本更新！验证码识别切换纯算法方案，识别率高达 99%**
+**v3.1 版本更新！新增仓库保活机制，防止 GitHub 60 天无提交自动禁用定时任务**
 
 **雨云签到工具 容器化部署后可实现每日自动签到~**
 
@@ -270,6 +270,11 @@ http://192.168.1.1:8080
 
 ## 更新日志
 
+### 2026-09-24 (v3.1)
+
+- 新增仓库保活机制：GitHub 规定公开仓库 60 天无 commit 推送会自动禁用 scheduled workflow（每日签到运行不算仓库活动，照样被掐）。`daily-checkin.yml` 新增保活步骤，每次运行时检测最后一次提交距今天数，≥45 天（留 15 天缓冲）时自动推送一个轻量 keepalive 提交（写 `.github/keepalive.txt` 时间戳，带 `[skip ci]` 不触发递归），<45 天则跳过。该步骤 `if: always()`，签到失败也会执行；workflow 新增 `permissions: contents: write` 授权推送
+- 修正脚本启动横幅版本号：2.3 → 3.1（v3.0 发布时漏改）
+
 ### 2026-09-01 (v3.0)
 
 - 验证码识别切换为纯算法方案（ICR）：黑色区域阈值分割 + 多角度模板匹配 + 贪心冲突消解，一次识别全部目标，替代 ddddocr；`requirements.txt` 移除 ddddocr，解除 Python <3.13 上限与 onnxruntime 的 glibc 强绑定（Alpine 下可用 apk 安装 opencv/numpy 运行）
@@ -379,6 +384,8 @@ GitHub 对 Fork 仓库的定时任务有限制，需要手动激活：
 1. 进入 Fork 仓库的 **Actions** 页面
 2. 点击 **I understand my workflows, go ahead and enable**
 3. 首次需要手动触发一次运行，之后定时任务才会生效
+
+另外注意：GitHub 规定**公开仓库 60 天内没有 commit 推送，会自动禁用 scheduled workflow**（定时签到每天在跑也不算"仓库活动"，只有提交才算）。被禁用前 GitHub 会发邮件提醒，届时到 Actions 页面手动 **Enable** 即可恢复。本项目已内置仓库保活机制（最后提交距今 ≥45 天时自动推送 keepalive 提交），只要定时任务还在正常运行就不会触线；若你的 Fork 停用过，手动 Enable 一次后保活机制会继续生效。
 
 ## 致谢
 

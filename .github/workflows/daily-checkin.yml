@@ -24,6 +24,10 @@ on:
         required: false
         default: ''
 
+# 授予 GITHUB_TOKEN 写权限，供仓库保活步骤推送 keepalive 提交
+permissions:
+  contents: write
+
 jobs:
   checkin:
     runs-on: ubuntu-latest
@@ -108,3 +112,23 @@ jobs:
           name: checkin-logs-${{ github.run_number }}
           path: logs/
           retention-days: 7
+
+      # 9. 仓库保活（GitHub 规则：公开仓库 60 天无 commit 推送会自动禁用 scheduled workflow；
+      #    每日签到运行不算仓库活动。距今 ≥45 天时自动推送一个轻量 keepalive 提交，留 15 天缓冲）
+      - name: 仓库保活（防止 60 天无提交导致定时任务被禁用）
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          LAST=$(git log -1 --format=%ct)
+          NOW=$(date +%s)
+          DAYS=$(( (NOW - LAST) / 86400 ))
+          echo "最后一次提交距今 ${DAYS} 天（阈值 45 天）"
+          if [ "$DAYS" -ge 45 ]; then
+            echo "Keepalive: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" > .github/keepalive.txt
+            git add .github/keepalive.txt
+            git commit -m "chore: keep repository active [skip ci]"
+            git push || echo "push 失败，等待下次运行"
+          else
+            echo "无需保活"
+          fi

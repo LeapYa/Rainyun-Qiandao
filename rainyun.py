@@ -3101,7 +3101,7 @@ if __name__ == "__main__":
 
     # 初始化日志（使用新的日志轮转功能）
     logger = setup_logging()
-    ver = "2.3"
+    ver = "3.1"
     logger.info("===================================================================")
     logger.info(f"🌧️ Rainyun-Qiandao v{ver} (Selenium)")
     logger.info("👨‍💻 Based on original project by: SerendipityR-2022")
