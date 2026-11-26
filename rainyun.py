@@ -2854,98 +2854,142 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_pr
         dismiss_modal_confirm(driver, timeout)
         dismiss_modal_confirm(driver, timeout)
         
-        # 每日签到按钮 xpath：通过父级 span[1] 文字"每日签到"精确定位，
-        # 避免误匹配"关注雨云"旁边同样显示"领取奖励"的按钮。
-        # 注意：末尾用 span[2] 而非 span[2]/a —— 签到完成后按钮变为"已完成"，
-        # 此时 span[2] 下没有 <a> 子元素，带 /a 会抛 NoSuchElementException。
-        CHECKIN_BTN_XPATH = '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/div/div[1]/div//div/div[1]/div[span[1][normalize-space(text())="每日签到"]]/span[2]'
+        # 2026-11 雨云改版：每日签到从“领取奖励”<a> 变成独立按钮
+        # button.daily-check-in-task（文字“去签到/已完成”），点击后弹窗内再点
+        # “500 积分”才触发验证码。旧结构保留兼容，避免页面灰度期间漏签。
+        NEW_TASK_CSS = "button.daily-check-in-task"
+        OLD_TASK_XPATH = ('//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div'
+                          '/div/div/div/div[1]/div//div/div[1]/div'
+                          '[span[1][normalize-space(text())="每日签到"]]/span[2]')
+
+        def locate_checkin_task():
+            for by, selector, is_new in ((By.CSS_SELECTOR, NEW_TASK_CSS, True),
+                                         (By.XPATH, OLD_TASK_XPATH, False)):
+                try:
+                    return WebDriverWait(driver, 8).until(
+                        EC.presence_of_element_located((by, selector))), is_new
+                except TimeoutException:
+                    continue
+            return None, False
+
         # eager 策略下 safe_get 返回较早，任务列表靠 XHR 填充可能滞后；
         # 等不到就刷新积分页再试一次，仍没有才判失败
-        try:
-            earn = WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.XPATH, CHECKIN_BTN_XPATH))
-            )
-        except TimeoutException:
+        earn, is_new_ui = locate_checkin_task()
+        if earn is None:
             logger_adapter.warning("未找到签到按钮，刷新积分页重试...")
             safe_get(driver, "https://app.rainyun.com/account/reward/earn")
             dismiss_modal_confirm(driver, timeout)
-            earn = WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.XPATH, CHECKIN_BTN_XPATH))
-            )
-        btn_text = earn.text.strip()
-        logger_adapter.info(f"签到按钮文字: [{btn_text}]")
+            earn, is_new_ui = locate_checkin_task()
+        if earn is None:
+            raise TimeoutException("未找到签到入口：新版按钮与旧版领取奖励均不存在")
 
-        # 只有"领取奖励"才需要点击，其他情况视为已完成
-        if btn_text == "领取奖励":
-            logger_adapter.info("点击领取奖励")
-            # 优先点击 span 内的 <a> 链接，无 <a> 时点击 span 本身
-            links = earn.find_elements(By.XPATH, "./a")
-            if links:
-                links[0].click()
-            else:
+        btn_text = earn.text.strip()
+        logger_adapter.info(f"签到入口（{'新版' if is_new_ui else '旧版'}）文字: [{btn_text}]")
+
+        captcha_done = False
+
+        def solve_visible_captcha():
+            nonlocal captcha_done
+            captcha_iframe = wait.until(EC.visibility_of_element_located(
+                (By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
+            driver.switch_to.frame(captcha_iframe)
+            try:
+                captcha_provider = CaptchaFactory.create_provider("tencent")
+                captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
+            finally:
+                driver.switch_to.default_content()
+            driver.implicitly_wait(5)
+            captcha_done = True
+
+        # 新版“去签到”/旧版“领取奖励”才需要点击，其他情况视为已完成
+        need_checkin = ("去签到" in btn_text) if is_new_ui else (btn_text == "领取奖励")
+        if need_checkin:
+            if is_new_ui:
+                logger_adapter.info("点击每日签到，打开签到弹窗")
                 earn.click()
-            state = wait_captcha_or_modal(driver, timeout)
-            if state == "captcha":
-                logger_adapter.info("处理验证码")
-                try:
-                    captcha_iframe = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
-                    driver.switch_to.frame(captcha_iframe)
-                    captcha_provider = CaptchaFactory.create_provider("tencent")
-                    captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
-                finally:
-                    driver.switch_to.default_content()
-                driver.implicitly_wait(5)
+                # 弹窗内点“500 积分”才会拉起腾讯验证码；抽奖券是另一个选项
+                reward = WebDriverWait(driver, 15).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, "button.daily-check-in__reward")))
+                logger_adapter.info(f"点击签到奖励: [{reward.text.strip()}]")
+                reward.click()
+                if wait_captcha_or_modal(driver, timeout) == "captcha":
+                    logger_adapter.info("处理验证码")
+                    solve_visible_captcha()
             else:
-                logger_adapter.info("未触发验证码")
-            
-            # 轮询等待按钮变为"已完成"：点击后可能因网络问题导致验证码弹窗（t_verify 三个点加载框）
-            # 迟迟未加载出 tcaptcha_iframe，wait_captcha_or_modal 误判为"未触发验证码"。
-            # 此时按钮仍为"领取奖励"，需检测 t_verify 加载框并等待真正的验证码弹窗出现后处理。
+                logger_adapter.info("点击领取奖励")
+                # 优先点击 span 内的 <a> 链接，无 <a> 时点击 span 本身
+                links = earn.find_elements(By.XPATH, "./a")
+                if links:
+                    links[0].click()
+                else:
+                    earn.click()
+                state = wait_captcha_or_modal(driver, timeout)
+                if state == "captcha":
+                    logger_adapter.info("处理验证码")
+                    solve_visible_captcha()
+                else:
+                    logger_adapter.info("未触发验证码")
+
+            # 轮询签到结果：验证码 iframe 可能因网络慢迟到（旧版 t_verify 加载框同理），
+            # wait_captcha_or_modal 的 8 秒窗口可能错过，这里持续检测真实验证码弹窗。
             poll_deadline = time.time() + 60
             while time.time() < poll_deadline:
                 time.sleep(3)
-                try:
-                    earn = driver.find_element(By.XPATH, CHECKIN_BTN_XPATH)
-                    btn_text = earn.text.strip()
-                except Exception:
-                    btn_text = ""
-
-                if btn_text == "已完成":
-                    logger_adapter.info("按钮已变为「已完成」，签到确认成功")
-                    break
-                if btn_text != "领取奖励":
-                    logger_adapter.info(f"按钮显示「{btn_text}」，视为签到已完成")
-                    break
-
-                # 按钮仍为"领取奖励"：检查验证码加载框（三个点）是否在加载
-                t_verify_elems = driver.find_elements(By.CSS_SELECTOR, "div#t_verify")
-                if t_verify_elems:
-                    logger_adapter.info("检测到验证码加载框（三个点）仍在加载，等待验证码弹窗出现...")
+                if is_new_ui:
                     try:
-                        captcha_iframe = wait.until(EC.visibility_of_element_located(
-                            (By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")))
-                        driver.switch_to.frame(captcha_iframe)
-                        captcha_provider = CaptchaFactory.create_provider("tencent")
-                        captcha_provider.solve(driver, timeout, retry_stats, logger_adapter)
-                    except TimeoutException:
-                        logger_adapter.warning("等待验证码弹窗超时，验证码可能已消失")
-                    finally:
-                        driver.switch_to.default_content()
-                    driver.implicitly_wait(5)
-                    logger_adapter.info("验证码处理完成，继续检查签到状态")
+                        status_text = driver.find_element(By.CSS_SELECTOR, ".daily-check-in__status").text.strip()
+                    except Exception:
+                        status_text = ""
+                    if "已领取" in status_text:
+                        logger_adapter.info(f"签到确认成功（{status_text}）")
+                        break
+                    try:
+                        new_text = driver.find_element(By.CSS_SELECTOR, NEW_TASK_CSS).text.strip()
+                    except Exception:
+                        new_text = ""
+                    if "已完成" in new_text:
+                        logger_adapter.info("按钮已变为“已完成”，签到确认成功")
+                        break
                 else:
-                    logger_adapter.warning("按钮仍为「领取奖励」且无验证码加载框，继续等待...")
+                    try:
+                        btn_text = driver.find_element(By.XPATH, OLD_TASK_XPATH).text.strip()
+                    except Exception:
+                        btn_text = ""
+                    if btn_text == "已完成":
+                        logger_adapter.info("按钮已变为“已完成”，签到确认成功")
+                        break
+                    if btn_text != "领取奖励":
+                        logger_adapter.info(f"按钮显示“{btn_text}”，视为签到已完成")
+                        break
+
+                if not captcha_done:
+                    # 只处理可见且有尺寸的 iframe，避免点到隐藏的残留验证码
+                    iframes = driver.find_elements(By.CSS_SELECTOR, "iframe[id^='tcaptcha_iframe']")
+                    for fr in iframes:
+                        try:
+                            if fr.is_displayed() and fr.size.get("width", 0) > 0:
+                                logger_adapter.info("检测到迟到的验证码弹窗，处理中...")
+                                solve_visible_captcha()
+                                break
+                        except Exception:
+                            continue
+                logger_adapter.warning("等待签到完成中...")
             else:
                 logger_adapter.warning("轮询等待签到完成超时（60秒），继续后续流程")
         else:
             logger_adapter.info(f"今日已签到（按钮显示: {btn_text}）")
 
         
-        points_raw = driver.find_element(By.XPATH,
-                                         '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3').get_attribute(
-            "textContent")
+        # 积分节点路径也可能随改版调整，读不到不影响签到结果判定
         import re
-        current_points = int(''.join(re.findall(r'\d+', points_raw)))
+        try:
+            points_raw = driver.find_element(By.XPATH,
+                                             '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3').get_attribute(
+                "textContent")
+            current_points = int(''.join(re.findall(r'\d+', points_raw)))
+        except Exception:
+            current_points = 0
+            logger_adapter.warning("未能读取当前积分（页面结构可能调整），不影响签到结果判定")
         if not os.getenv('CI'):
             logger_adapter.info(f"当前剩余积分: {current_points} | 约为 {current_points / 2000:.2f} 元")
         logger_adapter.info("签到任务执行成功！")
@@ -3101,7 +3145,7 @@ if __name__ == "__main__":
 
     # 初始化日志（使用新的日志轮转功能）
     logger = setup_logging()
-    ver = "3.1"
+    ver = "3.2"
     logger.info("===================================================================")
     logger.info(f"🌧️ Rainyun-Qiandao v{ver} (Selenium)")
     logger.info("👨‍💻 Based on original project by: SerendipityR-2022")
