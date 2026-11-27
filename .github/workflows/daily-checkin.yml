@@ -6,7 +6,11 @@ on:
     - cron: '45 22 * * *'
   
   # 代码推送时触发 (修改此文件时立即运行，用于激活定时器)
+  # 限定 branches 后，推 tag 不再触发（push.paths 对 tag 推送不生效，
+  # 曾导致发布版本时与分支推送同时触发两次签到，互相抢账号导致验证码被顶掉）
   push:
+    branches:
+      - main
     paths:
       - '.github/workflows/daily-checkin.yml'
       - 'rainyun.py'
@@ -27,6 +31,12 @@ on:
 # 授予 GITHUB_TOKEN 写权限，供仓库保活步骤推送 keepalive 提交
 permissions:
   contents: write
+
+# 同一时间只允许一个签到运行；发布等操作连续推送时，新的运行会取消旧的，
+# 避免两个运行同时对同一账号发起签到，验证码挑战互相顶掉
+concurrency:
+  group: daily-checkin
+  cancel-in-progress: true
 
 jobs:
   checkin:

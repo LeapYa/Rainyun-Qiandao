@@ -3056,7 +3056,10 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_pr
                             continue
                 logger_adapter.warning("等待签到完成中...")
             else:
-                logger_adapter.warning("轮询等待签到完成超时（60秒），继续后续流程")
+                if not captcha_done:
+                    # 既没处理验证码也没确认“已领取/已完成”，奖励必然未领取，抛错走重试
+                    raise TimeoutException("轮询 60 秒未确认签到完成（验证码未触发且未见已领取）")
+                logger_adapter.warning("轮询等待签到完成超时（60秒），验证码已通过，继续后续流程")
         else:
             logger_adapter.info(f"今日已签到（按钮显示: {btn_text}）")
 
