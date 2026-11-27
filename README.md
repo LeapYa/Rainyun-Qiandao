@@ -96,7 +96,7 @@ cp .env.example .env
 | `TIMEOUT`             | 请求超时时间（毫秒）             | `30000` |
 | `CHECKIN_MAX_RETRIES` | 签到失败最大重试次数             | `2`     |
 | `DAILY_REWARD`        | 每日奖励自动选择：`points`=500 积分（默认）/ `lottery`=抽奖券 × 1 | `points` |
-| `CLEAN_BROWSER`       | 干净浏览器：跳过 stealth/指纹脚本，用页面自己的 Cap widget 验证（Linux 需 Xvfb） | Docker/Actions 为 `true` |
+| `CLEAN_BROWSER`       | 干净浏览器：跳过 stealth/指纹脚本，用页面自己的 Cap widget 验证；VPS/青龙需设 `true` 并用 `xvfb-run` | Docker/Actions 为 `true` |
 
 #### 🌐 代理 IP（可选）
 
@@ -417,7 +417,7 @@ v3.1 起不需要。仓库内置「同步上游仓库」workflow，每天北京�
 
 ### Q: 点了「500 积分」后一直停在弹窗 / 日志显示“等待签到完成中...”？
 
-雨云签到已改用 Cap 验证码，Cap 会检测 Selenium 的 `cdc_`、`navigator.webdriver` 以及 stealth/指纹篡改。请启用 `CLEAN_BROWSER=true`（Docker 与 Actions 已默认），Linux 下使用 Xvfb 有头运行，并避免注入 stealth/指纹脚本。
+雨云签到已改用 Cap 验证码，Cap 会检测 Selenium 的 `cdc_`、`navigator.webdriver` 以及 stealth/指纹篡改。Docker 与 Actions 已默认启用 `CLEAN_BROWSER=true`；VPS/青龙等无桌面 Linux 需要设置 `CLEAN_BROWSER=true` 并用 `xvfb-run` 运行，同时避免注入 stealth/指纹脚本。
 
 ## 致谢
 
