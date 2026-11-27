@@ -53,7 +53,7 @@ jobs:
       - name: 安装中文字体并设置上海时区
         run: |
           sudo apt-get update
-          sudo apt-get install -y fonts-wqy-zenhei tzdata
+          sudo apt-get install -y fonts-wqy-zenhei tzdata xvfb
           sudo ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
           echo Asia/Shanghai | sudo tee /etc/timezone > /dev/null
 
@@ -105,6 +105,7 @@ jobs:
           SMTP_TO: ${{ secrets.SMTP_TO }}
           # 运行配置
           RUN_MODE: 'once'  # 单次运行模式，执行完就退出
+          CLEAN_BROWSER: 'true'  # 干净浏览器：不注入 stealth/指纹脚本，Xvfb 有头运行
           DEBUG: 'false'
           MAX_DELAY: '1'
           TIMEOUT: '60000'
@@ -114,7 +115,7 @@ jobs:
           # 截图嵌入策略 (all / failed_only / none)
           SCREENSHOT_MODE: ${{ secrets.SCREENSHOT_MODE || 'failed_only' }}
         run: |
-          python rainyun.py
+          xvfb-run -a -s "-screen 0 1280x1024x24" python rainyun.py
 
       # 8. 上传日志（可选，方便排查问题）
       - name: 上传日志

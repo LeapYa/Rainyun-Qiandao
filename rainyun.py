@@ -2065,6 +2065,13 @@ def init_selenium(account_id: str, proxy: str = None):
     Service = modules['Service']
     
     ops = Options()
+    clean_browser = os.getenv("CLEAN_BROWSER", "false").lower() == "true"
+    if clean_browser:
+        # 保留真实浏览器特征：关闭 AutomationControlled，移除 enable-automation 开关。
+        # Cap 的 instrumentation 会检测 Selenium/CDP/stealth 篡改，干净模式尽量不做这些。
+        ops.add_argument("--disable-blink-features=AutomationControlled")
+        ops.add_experimental_option("excludeSwitches", ["enable-automation"])
+        ops.add_experimental_option("useAutomationExtension", False)
     ops.add_argument("--no-sandbox")
     ops.add_argument("--disable-dev-shm-usage")  # Docker 环境优化
     ops.add_argument("--disable-extensions")
@@ -2080,21 +2087,27 @@ def init_selenium(account_id: str, proxy: str = None):
         ops.add_argument(f"--proxy-server=http://{proxy}")
         logger.info(f"浏览器已配置代理: {proxy}")
     
-    # 添加账号专属 User-Agent（相同账号每次相同）
-    user_agent = get_random_user_agent(account_id)
-    ops.add_argument(f"--user-agent={user_agent}")
-    logger.info(f"使用 User-Agent: {user_agent[:50]}...")  # 只显示前50个字符
+    # 添加账号专属 User-Agent（相同账号每次相同）；干净模式使用 Chrome 原生 UA
+    if clean_browser:
+        logger.info("使用 Chrome 原生 User-Agent（CLEAN_BROWSER=true）")
+    else:
+        user_agent = get_random_user_agent(account_id)
+        ops.add_argument(f"--user-agent={user_agent}")
+        logger.info(f"使用 User-Agent: {user_agent[:50]}...")  # 只显示前50个字符
     
     
     if debug:
         ops.add_experimental_option("detach", True)
     
-    # 设置窗口大小（避免因窗口太小导致元素重叠或误点击）
-    ops.add_argument("--window-size=1920,1080")
+    # 设置窗口大小（干净模式下控制在常见 Xvfb 屏幕内，避免触发 window_exceeds_screen）
+    ops.add_argument("--window-size=1280,900" if clean_browser else "--window-size=1920,1080")
     
     if linux:
-        ops.add_argument("--headless")
-        ops.add_argument("--disable-gpu")
+        if not clean_browser:
+            ops.add_argument("--headless")
+            ops.add_argument("--disable-gpu")
+        elif not os.environ.get("DISPLAY"):
+            logger.warning("CLEAN_BROWSER 在 Linux 下需要 DISPLAY/Xvfb，Chrome 可能无法启动")
 
         # 检测 ChromeDriver 路径
         # 仅 Docker 使用固定路径 /usr/bin/chromedriver；Actions runner 预装的同名文件
@@ -2726,19 +2739,51 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_pr
         driver = init_selenium(current_user, proxy=proxy)
         apply_browser_timezone(driver)
         
-        # 过 Selenium 检测
-        with open("stealth.min.js", mode="r") as f:
-            js = f.read()
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": js
-        })
-        
-        # 注入浏览器指纹随机化脚本（基于账号生成确定性指纹）
-        fingerprint_js = generate_fingerprint_script(current_user)
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": fingerprint_js
-        })
-        logger_adapter.info("已注入浏览器指纹脚本（账号专属指纹）")
+        clean_browser = os.getenv("CLEAN_BROWSER", "false").lower() == "true"
+        if clean_browser:
+            # Cap 会把 stealth/指纹篡改当成自动化：干净模式不注入这些脚本，
+            # 只清理 ChromeDriver 注入的 cdc_ / $cdc_ 标记（Cap 会扫描这些全局变量）
+            cleanup_js = """
+            (function () {
+              function clean() {
+                try {
+                  Object.keys(window).forEach(function (k) {
+                    if (k.indexOf('cdc_') === 0 || k.indexOf('$cdc_') === 0) {
+                      try { delete window[k]; } catch (e) {}
+                    }
+                  });
+                } catch (e) {}
+                try {
+                  Object.keys(document).forEach(function (k) {
+                    if (k.indexOf('cdc_') === 0 || k.indexOf('$cdc_') === 0) {
+                      try { delete document[k]; } catch (e) {}
+                    }
+                  });
+                } catch (e) {}
+              }
+              clean();
+              setTimeout(clean, 0);
+              setTimeout(clean, 100);
+              setInterval(clean, 500);
+              document.addEventListener('DOMContentLoaded', clean);
+            })();
+            """
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": cleanup_js})
+            logger_adapter.info("干净浏览器模式：跳过 stealth/指纹脚本，清理 cdc_ 标记")
+        else:
+            # 过 Selenium 检测
+            with open("stealth.min.js", mode="r") as f:
+                js = f.read()
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": js
+            })
+            
+            # 注入浏览器指纹随机化脚本（基于账号生成确定性指纹）
+            fingerprint_js = generate_fingerprint_script(current_user)
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": fingerprint_js
+            })
+            logger_adapter.info("已注入浏览器指纹脚本（账号专属指纹）")
         
         wait = WebDriverWait(driver, timeout)
         

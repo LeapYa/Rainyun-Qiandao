@@ -48,6 +48,8 @@ services:
       - SMTP_TO=${SMTP_TO}
       # 运行模式配置
       - RUN_MODE=once
+      # 干净浏览器：跳过 stealth/指纹脚本，使用页面自己的 Cap widget 验证
+      - CLEAN_BROWSER=${CLEAN_BROWSER:-true}
       # 每日奖励选择：points=500 积分（默认），lottery=抽奖券 × 1
       - DAILY_REWARD=${DAILY_REWARD:-points}
       # 可选配置
@@ -105,6 +107,8 @@ services:
       # 运行模式配置
       - RUN_MODE=schedule
       - SCHEDULE_TIME=${SCHEDULE_TIME:-08:00}
+      # 干净浏览器：跳过 stealth/指纹脚本，使用页面自己的 Cap widget 验证
+      - CLEAN_BROWSER=${CLEAN_BROWSER:-true}
       # 每日奖励选择：points=500 积分（默认），lottery=抽奖券 × 1
       - DAILY_REWARD=${DAILY_REWARD:-points}
       # 可选配置

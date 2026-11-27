@@ -2,7 +2,7 @@
 
 **🐳 容器化部署，内置定时任务**
 
-**v3.3 版本更新！每日签到奖励可选：500 积分或抽奖券 × 1（`DAILY_REWARD`）**
+**v3.3 版本更新！修复 Cap 验证码导致的签到失败（`CLEAN_BROWSER` 干净模式）**
 
 **雨云签到工具 容器化部署后可实现每日自动签到~**
 
@@ -96,6 +96,7 @@ cp .env.example .env
 | `TIMEOUT`             | 请求超时时间（毫秒）             | `30000` |
 | `CHECKIN_MAX_RETRIES` | 签到失败最大重试次数             | `2`     |
 | `DAILY_REWARD`        | 每日奖励自动选择：`points`=500 积分（默认）/ `lottery`=抽奖券 × 1 | `points` |
+| `CLEAN_BROWSER`       | 干净浏览器：跳过 stealth/指纹脚本，用页面自己的 Cap widget 验证（Linux 需 Xvfb） | Docker/Actions 为 `true` |
 
 #### 🌐 代理 IP（可选）
 
@@ -273,6 +274,8 @@ http://192.168.1.1:8080
 
 ### 2026-11-27 (v3.3)
 
+- 2026-11-27 起，雨云签到验证码切换为 Cap。Cap 的 instrumentation 会检测 Selenium 的 `cdc_` 标记、`navigator.webdriver` 与 stealth/指纹篡改，新增 `CLEAN_BROWSER`：关闭 automation 开关、跳过 stealth/指纹脚本、使用 Chrome 原生 UA、Xvfb 有头运行、清理 `cdc_` 标记
+- GitHub Actions 与 Docker 默认启用 `CLEAN_BROWSER`：Actions 通过 `xvfb-run` 提供有头环境，Docker 使用基础镜像自带的 Xvfb（`DISPLAY=:99`）
 - 感谢 @3259006402 在 [PR #4](https://github.com/LeapYa/Rainyun-Qiandao/pull/4) 贡献每日签到奖励选择功能
 - 新增 `DAILY_REWARD` 环境变量：每日签到奖励可选 `points`（500 积分，默认）或 `lottery`（抽奖券 × 1），不配置时行为与之前完全一致
 - 签到弹窗奖励按钮改为按文案匹配选择，命中不到配置的文案时回退到第一个按钮并告警，避免前端再改文案就整段漏签
@@ -411,6 +414,10 @@ GitHub 对 Fork 仓库的定时任务有限制，需要手动激活：
 ### Q: Fork 后还需要手动 Sync fork 获取更新吗？
 
 v3.1 起不需要。仓库内置「同步上游仓库」workflow，每天北京时间 6:30 自动检查上游并合并更新到你的 Fork（你本地的修改在冲突时优先保留）。唯一的例外：v3.1 之前 Fork 的老仓库还没有这个 workflow，需手动 Sync fork 一次把 v3.1 拉下来，之后即全自动。
+
+### Q: 点了「500 积分」后一直停在弹窗 / 日志显示“等待签到完成中...”？
+
+雨云签到已改用 Cap 验证码，Cap 会检测 Selenium 的 `cdc_`、`navigator.webdriver` 以及 stealth/指纹篡改。请启用 `CLEAN_BROWSER=true`（Docker 与 Actions 已默认），Linux 下使用 Xvfb 有头运行，并避免注入 stealth/指纹脚本。
 
 ## 致谢
 

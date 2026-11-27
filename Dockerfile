@@ -69,6 +69,8 @@ RUN mkdir -p temp logs
 ENV PYTHONUNBUFFERED=1
 ENV DISPLAY=:99
 ENV TZ=Asia/Shanghai
+# 基础镜像自带 Xvfb，默认使用干净浏览器让页面自己的 Cap widget 完成验证
+ENV CLEAN_BROWSER=true
 
 RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && \
     echo ${TZ} > /etc/timezone
