@@ -59,6 +59,37 @@ def apply_browser_timezone(driver):
     except Exception as exc:
         logger.warning(f"设置浏览器时区失败: {exc}")
 
+# ==========================================
+# 每日签到奖励选择（DAILY_REWARD）
+# ==========================================
+# 新版签到弹窗里有多个奖励按钮（500 积分 / 抽奖券 × 1），点其中一个才会拉起腾讯验证码。
+# 由环境变量决定点哪个；不配置时默认 points，行为与改动前完全一致。
+DAILY_REWARD_CHOICES = {
+    "points": ("500积分",),
+    "lottery": ("抽奖券", "抽奖"),
+}
+DAILY_REWARD_ALIASES = {
+    "points": "points", "point": "points", "integral": "points", "integrals": "points",
+    "积分": "points", "500": "points", "500积分": "points", "500分": "points",
+    "lottery": "lottery", "ticket": "lottery", "tickets": "lottery",
+    "draw": "lottery", "raffle": "lottery",
+    "抽奖": "lottery", "抽奖券": "lottery", "券": "lottery",
+}
+
+
+def get_daily_reward_choice():
+    """读取每日签到奖励选择：points = 500 积分（默认），lottery = 抽奖券 × 1。"""
+    import re
+
+    raw = (os.getenv("DAILY_REWARD", "points") or "points").strip()
+    key = re.sub(r"[\s_\-]+", "", raw).lower()
+    choice = DAILY_REWARD_ALIASES.get(key)
+    if choice is None:
+        logger.warning(f"DAILY_REWARD=\"{raw}\" 无法识别（可选 points / lottery），按默认 points 处理")
+        return "points"
+    return choice
+
+
 # 全局变量，用于存储Selenium模块
 selenium_modules = None
 
@@ -2417,6 +2448,44 @@ def wait_captcha_or_modal(driver, timeout):
     return "none"
 
 
+def pick_reward_button(driver, choice, timeout, logger_adapter):
+    """在签到弹窗里按 DAILY_REWARD 选择奖励按钮，返回 (按钮, 是否命中配置文案)。
+
+    找不到配置的文案时回退到第一个按钮，避免前端再改文案就整段漏签。
+    """
+    modules = import_selenium_modules()
+    By = modules['By']
+    EC = modules['EC']
+    WebDriverWait = modules['WebDriverWait']
+    import re
+
+    wait = WebDriverWait(driver, timeout)
+    buttons = wait.until(
+        EC.presence_of_all_elements_located((By.CSS_SELECTOR, "button.daily-check-in__reward"))
+    )
+    if not buttons:
+        return None, False
+
+    keywords = DAILY_REWARD_CHOICES.get(choice) or DAILY_REWARD_CHOICES["points"]
+    for btn in buttons:
+        try:
+            text = re.sub(r"\s+", "", btn.text or "")
+        except Exception:
+            continue
+        if any(k in text for k in keywords):
+            return btn, True
+
+    first_text = ""
+    try:
+        first_text = buttons[0].text.strip()
+    except Exception:
+        pass
+    logger_adapter.warning(
+        f"签到弹窗里没有匹配「{'/'.join(keywords)}」的奖励，回退到第一个按钮（{first_text}）"
+    )
+    return buttons[0], False
+
+
 def save_cookies(driver, account_id):
     """保存当前账号的 Cookie 到本地文件"""
     import json
@@ -2907,10 +2976,21 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_pr
             if is_new_ui:
                 logger_adapter.info("点击每日签到，打开签到弹窗")
                 earn.click()
-                # 弹窗内点“500 积分”才会拉起腾讯验证码；抽奖券是另一个选项
-                reward = WebDriverWait(driver, 15).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, "button.daily-check-in__reward")))
-                logger_adapter.info(f"点击签到奖励: [{reward.text.strip()}]")
+                # 弹窗内有“500 积分 / 抽奖券”多个奖励，点其中一个才会拉起腾讯验证码；
+                # 选哪个由 DAILY_REWARD 决定，默认 points（500 积分）与旧行为一致
+                reward_choice = get_daily_reward_choice()
+                reward, reward_matched = pick_reward_button(driver, reward_choice, 15, logger_adapter)
+                if reward is None:
+                    raise TimeoutException("签到弹窗里没有可用的奖励按钮")
+                reward_text = ""
+                try:
+                    reward_text = reward.text.strip()
+                except Exception:
+                    pass
+                logger_adapter.info(
+                    f"点击签到奖励: [{reward_text}]（DAILY_REWARD={reward_choice}"
+                    f"{'' if reward_matched else '，未匹配已回退'}）"
+                )
                 reward.click()
                 if wait_captcha_or_modal(driver, timeout) == "captcha":
                     logger_adapter.info("处理验证码")

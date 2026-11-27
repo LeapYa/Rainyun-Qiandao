@@ -48,6 +48,8 @@ services:
       - SMTP_TO=${SMTP_TO}
       # 运行模式配置
       - RUN_MODE=once
+      # 每日奖励选择：points=500 积分（默认），lottery=抽奖券 × 1
+      - DAILY_REWARD=${DAILY_REWARD:-points}
       # 可选配置
       - DEBUG=${DEBUG:-false}
       - MAX_DELAY=${MAX_DELAY:-5}
@@ -103,6 +105,8 @@ services:
       # 运行模式配置
       - RUN_MODE=schedule
       - SCHEDULE_TIME=${SCHEDULE_TIME:-08:00}
+      # 每日奖励选择：points=500 积分（默认），lottery=抽奖券 × 1
+      - DAILY_REWARD=${DAILY_REWARD:-points}
       # 可选配置
       - DEBUG=${DEBUG:-false}
       - MAX_DELAY=${MAX_DELAY:-5}
