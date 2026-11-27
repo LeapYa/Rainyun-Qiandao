@@ -2460,8 +2460,9 @@ def pick_reward_button(driver, choice, timeout, logger_adapter):
     import re
 
     wait = WebDriverWait(driver, timeout)
+    # 等按钮可见再读文案：弹窗已插入 DOM 但尚未显示时文案为空，会被误判为不匹配
     buttons = wait.until(
-        EC.presence_of_all_elements_located((By.CSS_SELECTOR, "button.daily-check-in__reward"))
+        EC.visibility_of_all_elements_located((By.CSS_SELECTOR, "button.daily-check-in__reward"))
     )
     if not buttons:
         return None, False
@@ -2473,7 +2474,7 @@ def pick_reward_button(driver, choice, timeout, logger_adapter):
         except Exception:
             continue
         if any(k in text for k in keywords):
-            return btn, True
+            return wait.until(EC.element_to_be_clickable(btn)), True
 
     first_text = ""
     try:
@@ -2483,7 +2484,7 @@ def pick_reward_button(driver, choice, timeout, logger_adapter):
     logger_adapter.warning(
         f"签到弹窗里没有匹配「{'/'.join(keywords)}」的奖励，回退到第一个按钮（{first_text}）"
     )
-    return buttons[0], False
+    return wait.until(EC.element_to_be_clickable(buttons[0])), False
 
 
 def save_cookies(driver, account_id):
@@ -3225,7 +3226,7 @@ if __name__ == "__main__":
 
     # 初始化日志（使用新的日志轮转功能）
     logger = setup_logging()
-    ver = "3.2"
+    ver = "3.3"
     logger.info("===================================================================")
     logger.info(f"🌧️ Rainyun-Qiandao v{ver} (Selenium)")
     logger.info("👨‍💻 Based on original project by: SerendipityR-2022")
