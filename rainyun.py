@@ -2065,7 +2065,7 @@ def init_selenium(account_id: str, proxy: str = None):
     Service = modules['Service']
     
     ops = Options()
-    clean_browser = os.getenv("CLEAN_BROWSER", "false").lower() == "true"
+    clean_browser = os.getenv("CLEAN_BROWSER", "true").lower() != "false"
     if clean_browser:
         # 保留真实浏览器特征：关闭 AutomationControlled，移除 enable-automation 开关。
         # Cap 的 instrumentation 会检测 Selenium/CDP/stealth 篡改，干净模式尽量不做这些。
@@ -2739,7 +2739,7 @@ def run_checkin(account_user=None, account_pwd=None, reuse_proxy=None, failed_pr
         driver = init_selenium(current_user, proxy=proxy)
         apply_browser_timezone(driver)
         
-        clean_browser = os.getenv("CLEAN_BROWSER", "false").lower() == "true"
+        clean_browser = os.getenv("CLEAN_BROWSER", "true").lower() != "false"
         if clean_browser:
             # Cap 会把 stealth/指纹篡改当成自动化：干净模式不注入这些脚本，
             # 只清理 ChromeDriver 注入的 cdc_ / $cdc_ 标记（Cap 会扫描这些全局变量）
