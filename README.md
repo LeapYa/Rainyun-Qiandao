@@ -92,11 +92,13 @@ cp .env.example .env
 | `SCHEDULE_TIME`       | 定时执行时间（仅 schedule 模式） | `08:00` |
 | `DEBUG`               | 开启调试日志                     | `false` |
 | `MAX_DELAY`           | 多账号错峰启动最大随机延时（秒） | `15`    |
-| `MAX_WORKERS`         | 最大并发线程数                   | `3`     |
+| `MAX_WORKERS`         | 最大并发线程数（内存小的 VPS 建议 `1`；Docker compose 默认 `1`） | `3`     |
 | `TIMEOUT`             | 请求超时时间（毫秒）             | `30000` |
 | `CHECKIN_MAX_RETRIES` | 签到失败最大重试次数             | `2`     |
 | `DAILY_REWARD`        | 每日奖励自动选择：`points`=500 积分（默认）/ `lottery`=抽奖券 × 1 | `points` |
 | `CLEAN_BROWSER`       | 干净浏览器：跳过 stealth/指纹脚本，用页面自己的 Cap widget 验证；VPS/青龙需设 `true` 并用 `xvfb-run` | Docker/Actions 为 `true` |
+
+> **内存建议**：单账号 1 GB 起步（`MAX_WORKERS=1` + swap），Docker/青龙建议 2 GB；多账号并发建议 2 GB 以上。Xvfb 本身只占几十 MB，主要占用是 Chrome。
 
 #### 🌐 代理 IP（可选）
 

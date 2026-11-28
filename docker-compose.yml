@@ -55,6 +55,7 @@ services:
       # 可选配置
       - DEBUG=${DEBUG:-false}
       - MAX_DELAY=${MAX_DELAY:-5}
+      - MAX_WORKERS=${MAX_WORKERS:-1}
       - TIMEOUT=${TIMEOUT:-15000}
       # Python环境配置
       - PYTHONUNBUFFERED=1
@@ -65,8 +66,8 @@ services:
       # 挂载临时目录（用于验证码图片）
       - ./temp:/app/temp
       - ./logs:/app/logs
-    # 内存限制
-    mem_limit: 512m
+    # 内存限制（干净模式 Chrome + Xvfb 至少 1g）
+    mem_limit: 1g
     # CPU限制
     cpus: '0.3'
     # 安全配置
@@ -114,6 +115,7 @@ services:
       # 可选配置
       - DEBUG=${DEBUG:-false}
       - MAX_DELAY=${MAX_DELAY:-5}
+      - MAX_WORKERS=${MAX_WORKERS:-1}
       - TIMEOUT=${TIMEOUT:-15000}
       # Python环境配置
       - PYTHONUNBUFFERED=1
